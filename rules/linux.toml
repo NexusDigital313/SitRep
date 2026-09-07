@@ -1,0 +1,571 @@
+# Linux rule pack. Patterns match against the message body with the syslog
+# preamble already stripped. Named captures are available to title/means/cause/fix.
+
+[[rule]]
+id = "linux.oom-killer"
+match = 'Out of memory: Killed process (?P<pid>\d+) \((?P<proc>[^)]+)\)'
+severity = "critical"
+sources = ["kernel", "journal", "piped"]
+title = "Ran out of memory — the kernel killed {proc}"
+means = """
+The machine ran out of usable RAM. Linux does not simply freeze when this
+happens: it picks the process it judges most expendable and kills it outright.
+This time that was {proc} (process {pid}). Whatever {proc} was doing stopped
+mid-flight, and anything depending on it will have failed too.
+"""
+cause = [
+  "A process gradually leaked memory until nothing was left",
+  "A legitimate workload was simply larger than this machine can hold",
+  "Little or no swap configured, so there was no cushion to fall back on",
+]
+fix = [
+  "See the full picture of the kill: journalctl -k -b | grep -A20 'Out of memory'",
+  "Cap the offending service so it dies politely instead: add MemoryMax=1G to its unit file",
+  "Add swap as a stopgap: fallocate -l 2G /swapfile && mkswap /swapfile && swapon /swapfile",
+]
+tags = ["memory", "kernel"]
+
+[[rule]]
+id = "linux.oom-invoked"
+match = '(?P<proc>[\w./-]+) invoked oom-killer'
+severity = "critical"
+sources = ["kernel", "journal", "piped"]
+title = "Memory pressure — {proc} triggered the out-of-memory killer"
+means = """
+{proc} asked for memory the kernel could not supply, which forced Linux to start
+killing processes to free some up. Even if nothing important died this time, the
+machine was at the edge, and it will happen again under the same load.
+"""
+cause = [
+  "Total demand for memory exceeded RAM plus swap",
+  "A cgroup or container memory limit was reached, not the host's own RAM",
+]
+fix = [
+  "Check what was actually holding memory at the time: journalctl -k -b | grep -B5 -A30 oom-killer",
+  "If this is a container, the limit is the container's, not the host's — check its memory cap",
+]
+tags = ["memory", "kernel"]
+
+[[rule]]
+id = "linux.ext4-error"
+match = 'EXT4-fs error \(device (?P<dev>[\w-]+)\)'
+severity = "critical"
+sources = ["kernel", "journal", "piped"]
+title = "Filesystem corruption detected on {dev}"
+means = """
+The ext4 driver found something on {dev} that does not add up — metadata that
+contradicts itself. This is the filesystem telling you it no longer fully trusts
+what is on the disk. It is usually a symptom of failing hardware or an unclean
+shutdown, and it can quietly corrupt files if left alone.
+"""
+cause = [
+  "The disk is failing and returning bad data",
+  "The machine lost power or was reset while writing",
+  "A cable, controller, or virtualization layer under the disk is unreliable",
+]
+fix = [
+  "Check the disk's own health first: smartctl -a /dev/{dev}",
+  "Back up anything important BEFORE repairing — fsck can discard damaged data",
+  "Repair from a live environment, never on a mounted filesystem: fsck -f /dev/{dev}",
+]
+tags = ["disk", "filesystem", "kernel"]
+
+[[rule]]
+id = "linux.remount-readonly"
+match = 'Remounting filesystem read-only|Filesystem has been set read-only'
+severity = "critical"
+sources = ["kernel", "journal", "piped"]
+title = "A filesystem was forced read-only to stop further damage"
+means = """
+The kernel hit enough errors that it stopped allowing writes altogether. This is
+a protective reflex: it would rather freeze the filesystem than keep writing to
+something it knows is broken. Anything trying to save data right now is failing.
+"""
+cause = [
+  "Filesystem corruption the driver could not work around",
+  "The underlying disk stopped accepting writes",
+]
+fix = [
+  "Find the first error that started it: journalctl -k -b | grep -i -m5 'EXT4-fs\\|I/O error'",
+  "Check the disk hardware before remounting: smartctl -a /dev/sda",
+  "Do not simply remount read-write and carry on — that risks real data loss",
+]
+tags = ["disk", "filesystem", "kernel"]
+
+[[rule]]
+id = "linux.io-error"
+match = 'blk_update_request: (?:I/O|critical) .*error.*dev (?P<dev>\w+)|Buffer I/O error on dev (?P<dev2>\w+)'
+severity = "critical"
+sources = ["kernel", "piped"]
+title = "The disk failed to complete a read or write"
+means = """
+The storage device physically failed an operation the kernel asked of it. Unlike
+a software error, this means the hardware itself said no. A handful of these can
+be a transient cable problem; a steady stream means the drive is dying.
+"""
+cause = [
+  "The drive has bad sectors or is failing outright",
+  "A loose or faulty cable, backplane, or disk controller",
+  "For a VM, the storage underneath the hypervisor is in trouble",
+]
+fix = [
+  "Read the drive's own verdict: smartctl -a /dev/sda (look at Reallocated_Sector_Ct)",
+  "Count how bad it is: journalctl -k -b | grep -c 'I/O error'",
+  "If the numbers are climbing, treat the disk as already lost and replace it",
+]
+tags = ["disk", "hardware", "kernel"]
+
+[[rule]]
+id = "linux.smart-failure"
+match = 'SMART.*(?:failure|FAILED|impending)|failure is predicted'
+severity = "critical"
+sources = ["kernel", "journal", "piped"]
+title = "The drive is reporting its own imminent failure"
+means = """
+Drives run continuous self-diagnostics, and this one has concluded it is going to
+fail. It is not a prediction to argue with — SMART warnings of this kind are
+followed by actual failure often enough that the drive should be considered
+already gone.
+"""
+cause = ["The drive is wearing out or has developed a physical fault"]
+fix = [
+  "Get the details: smartctl -a /dev/sda",
+  "Copy the data off now, while it still reads",
+  "Replace the drive — do not wait for it to fail completely",
+]
+tags = ["disk", "hardware"]
+
+[[rule]]
+id = "linux.disk-full"
+match = 'No space left on device|(?P<mnt>[\w/.-]+): file system full'
+severity = "error"
+title = "A disk is completely full"
+means = """
+A write failed because there was nowhere to put the data. Programs handle this
+badly as a rule — databases corrupt, logs vanish, and services fail to start —
+so a full disk tends to produce a cascade of unrelated-looking errors.
+"""
+cause = [
+  "Logs or caches grew without bound",
+  "A large file or backup was written and never cleaned up",
+  "Inodes exhausted rather than bytes — millions of tiny files",
+]
+fix = [
+  "See which filesystem: df -h",
+  "If df shows space free, you are out of inodes instead: df -i",
+  "Find the biggest offenders: du -xh / 2>/dev/null | sort -rh | head -20",
+  "Reclaim journal space quickly: journalctl --vacuum-size=200M",
+]
+tags = ["disk", "capacity"]
+
+[[rule]]
+id = "linux.segfault"
+match = '(?P<proc>[\w.-]+)\[(?P<pid>\d+)\]: segfault at (?P<addr>[0-9a-fx]+)'
+severity = "error"
+sources = ["kernel", "journal", "piped"]
+title = "{proc} crashed with a segmentation fault"
+means = """
+{proc} tried to read or write memory it does not own, so the kernel killed it on
+the spot. This is a bug in the program itself, not a configuration mistake — the
+process died at address {addr} and did not get to clean up after itself.
+"""
+cause = [
+  "A bug in the program or one of the libraries it loads",
+  "A library was upgraded out from under a running binary",
+  "Failing RAM, if crashes appear across many unrelated programs",
+]
+fix = [
+  "Look for a saved crash dump: coredumpctl list {proc}",
+  "Inspect the crash in a debugger: coredumpctl debug {proc}",
+  "If several unrelated programs are segfaulting, suspect memory: run memtest86+",
+]
+tags = ["crash", "process"]
+
+[[rule]]
+id = "linux.kernel-oops"
+match = 'Oops:|kernel BUG at|Call Trace:|general protection fault'
+severity = "critical"
+sources = ["kernel", "piped"]
+title = "The kernel itself hit a bug"
+means = """
+Something went wrong inside the kernel rather than in a normal program. Linux
+printed a stack trace and carried on where it could, but the machine is in a
+degraded state after this and may be unstable until it is rebooted.
+"""
+cause = [
+  "A buggy or mismatched driver, very often a third-party or out-of-tree one",
+  "Failing hardware, particularly RAM",
+]
+fix = [
+  "Capture the whole trace: journalctl -k -b -1 | grep -A40 'Call Trace'",
+  "Check whether an out-of-tree module is implicated: cat /proc/sys/kernel/tainted",
+  "Reboot at the first safe opportunity — the kernel does not fully recover from this",
+]
+tags = ["kernel", "crash"]
+
+[[rule]]
+id = "linux.hung-task"
+match = 'task (?P<proc>[\w./-]+):(?P<pid>\d+) blocked for more than (?P<secs>\d+) seconds'
+severity = "error"
+sources = ["kernel", "piped"]
+title = "{proc} has been stuck for over {secs} seconds"
+means = """
+{proc} has been waiting on the kernel for {secs} seconds without moving. It is
+not consuming CPU — it is frozen waiting for something that is not answering,
+which is nearly always storage or a network filesystem.
+"""
+cause = [
+  "A disk or storage controller that has stopped responding",
+  "An NFS or network mount whose server has gone away",
+  "Severe I/O contention — the queue is real, just very slow",
+]
+fix = [
+  "Find every process stuck in uninterruptible sleep: ps aux | awk '$8 ~ /D/'",
+  "Check whether the disk is saturated or simply dead: iostat -x 2 5",
+  "For an NFS mount, confirm the server is reachable before anything else",
+]
+tags = ["kernel", "disk", "hang"]
+
+[[rule]]
+id = "linux.unit-failed"
+match = '(?P<unit>[\w@.:-]+\.(?:service|socket|timer|mount|target)): (?:Main process exited|Failed with result)'
+severity = "error"
+title = "The service {unit} failed"
+means = """
+systemd started {unit} and it exited in a way systemd treats as failure. Anything
+that depends on this service is either not running or is running degraded.
+"""
+cause = [
+  "The program exited non-zero — a config error, a missing file, or a port already taken",
+  "A dependency it needs was not ready yet",
+  "It was killed, often by the out-of-memory killer",
+]
+fix = [
+  "Read what it actually said: systemctl status {unit} -l --no-pager",
+  "See its own log, not the whole journal: journalctl -u {unit} -b --no-pager",
+  "Once the cause is fixed: systemctl restart {unit}",
+]
+tags = ["systemd", "service"]
+
+[[rule]]
+id = "linux.start-limit"
+match = '(?P<unit>[\w@.:-]+\.\w+): Start request repeated too quickly|start-limit-hit'
+severity = "error"
+title = "{unit} is crash-looping and systemd has given up on it"
+means = """
+{unit} crashed, was restarted, and crashed again fast enough and often enough
+that systemd stopped trying. It is now stopped and will stay stopped. Restarting
+it by hand without fixing the cause will simply repeat the loop.
+"""
+cause = [
+  "A configuration error that fails immediately on every start",
+  "A port or socket already held by something else",
+  "A dependency that is permanently unavailable",
+]
+fix = [
+  "Read the failure from the last attempt: journalctl -u {unit} -b --no-pager | tail -40",
+  "Fix the underlying cause first, then clear the throttle: systemctl reset-failed {unit}",
+  "Then start it normally: systemctl start {unit}",
+]
+tags = ["systemd", "service"]
+
+[[rule]]
+id = "linux.unit-start-failed"
+match = 'Failed to start (?P<what>.+?)\.?$'
+severity = "error"
+title = "Failed to start {what}"
+means = """
+systemd could not bring up {what} at all. Where a crash-loop means it started and
+died, this means it never got off the ground.
+"""
+cause = [
+  "A missing binary, unit file, or configuration file",
+  "A dependency that failed first, taking this one with it",
+  "Permissions on a file or directory the service needs",
+]
+fix = [
+  "systemctl status --no-pager to see the failure in context",
+  "List everything currently failed: systemctl --failed",
+]
+tags = ["systemd", "service"]
+
+[[rule]]
+id = "linux.ssh-bruteforce"
+match = 'Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>[0-9a-f.:]+)'
+severity = "warning"
+title = "Failed SSH login for '{user}' from {ip}"
+means = """
+Someone tried to log in over SSH as {user} from {ip} and got the password wrong.
+A few of these are a colleague fumbling a password. Hundreds are an automated
+attack, which is simply ambient weather for any machine with a public SSH port —
+it only matters if one eventually succeeds.
+"""
+cause = [
+  "Automated scanning, if the volume is high and the usernames are generic",
+  "A real user or a stale saved credential, if the volume is low",
+]
+fix = [
+  "Judge the scale: journalctl -u ssh -b | grep -c 'Failed password'",
+  "Check nothing actually got in: journalctl -u ssh -b | grep 'Accepted'",
+  "Turn off password auth entirely: set PasswordAuthentication no in /etc/ssh/sshd_config",
+  "Install fail2ban to drop repeat offenders automatically",
+]
+tags = ["security", "ssh", "auth"]
+
+[[rule]]
+id = "linux.ssh-invalid-user"
+match = 'Invalid user (?P<user>\S+) from (?P<ip>[0-9a-f.:]+)'
+severity = "warning"
+title = "SSH login attempt for non-existent user '{user}' from {ip}"
+means = """
+{ip} tried to log in as {user}, an account that does not exist here. Guessing at
+usernames is the signature of an automated scanner rather than a confused human.
+"""
+cause = ["Automated credential scanning against a publicly reachable SSH port"]
+fix = [
+  "This is normal background noise on a public IP; act on volume, not existence",
+  "Reduce it by moving SSH off port 22, or firewall it to known addresses",
+]
+tags = ["security", "ssh", "auth"]
+
+[[rule]]
+id = "linux.sudo-failure"
+match = 'sudo:.*authentication failure|(?P<user>\S+) : \d+ incorrect password attempts'
+severity = "warning"
+title = "A sudo attempt was rejected"
+means = """
+Someone ran a command with sudo and failed to authenticate. Worth a glance to
+confirm it was a person mistyping rather than an account being probed.
+"""
+cause = ["A mistyped password", "A script with stale credentials", "An account being tested"]
+fix = ["Check who and when: journalctl -b | grep sudo | tail -20"]
+tags = ["security", "auth"]
+
+[[rule]]
+id = "linux.selinux-denial"
+match = 'avc:\s+denied\s+\{\s*(?P<perm>[^}]+)\}'
+severity = "warning"
+title = "SELinux blocked an action ({perm})"
+means = """
+SELinux stopped a program from doing something its security policy does not
+permit. The program was not broken — it was refused. This usually surfaces as a
+service mysteriously failing to read a file or open a port, with a confusing
+error that never mentions SELinux.
+"""
+cause = [
+  "Files in a non-standard location carrying the wrong security label",
+  "A service listening on a port its policy does not allow",
+]
+fix = [
+  "Get a plain-language explanation and suggested fix: ausearch -m avc -ts recent | audit2why",
+  "Relabel files moved into place: restorecon -Rv /path/to/files",
+  "Confirm the diagnosis by testing in permissive mode: setenforce 0 (temporary, revert after)",
+]
+tags = ["security", "selinux"]
+
+[[rule]]
+id = "linux.apparmor-denial"
+match = 'apparmor="DENIED".*profile="(?P<profile>[^"]+)"'
+severity = "warning"
+title = "AppArmor blocked an action by {profile}"
+means = """
+AppArmor prevented {profile} from doing something outside its permitted profile.
+As with SELinux, the program itself is fine — it was denied, and the error it
+reports will rarely say so.
+"""
+cause = ["The program needs access the profile does not grant, often after a config change"]
+fix = [
+  "See what was denied: journalctl -b | grep apparmor",
+  "Test the theory by loosening one profile: aa-complain /etc/apparmor.d/{profile}",
+]
+tags = ["security", "apparmor"]
+
+[[rule]]
+id = "linux.thermal-throttle"
+match = 'CPU\d+: (?:Core|Package) temperature above threshold|thermal.*throttl'
+severity = "warning"
+sources = ["kernel", "piped"]
+title = "The CPU overheated and slowed itself down"
+means = """
+The processor got hot enough that it reduced its own speed to avoid damage. The
+machine is not broken, but it is running well below the performance you paid for,
+and sustained heat shortens hardware life.
+"""
+cause = ["Dust-clogged heatsink or fans", "Failed fan", "Dried-out thermal paste", "Poor airflow"]
+fix = [
+  "Watch it live: watch -n1 sensors",
+  "Physically check fans and clear dust",
+  "In a VM or cloud instance this is the host's problem, not yours — report it",
+]
+tags = ["hardware", "thermal"]
+
+[[rule]]
+id = "linux.mce-error"
+match = 'Machine check events logged|mce: \[Hardware Error\]|EDAC.*(?:CE|UE) (?:error|memory)'
+severity = "critical"
+sources = ["kernel", "piped"]
+title = "The hardware reported a machine check error"
+means = """
+The CPU's own error detection caught a fault — usually memory, sometimes the
+processor or bus. Correctable errors are handled silently but predict failure;
+uncorrectable ones can corrupt data or panic the machine.
+"""
+cause = ["Failing RAM", "A failing CPU or motherboard", "Instability from overclocking"]
+fix = [
+  "Decode the events into readable form: mcelog --client (or journalctl -k | grep -i mce)",
+  "Test memory thoroughly — this needs a reboot: memtest86+",
+  "If ECC identifies a specific DIMM, replace that stick",
+]
+tags = ["hardware", "memory", "kernel"]
+
+[[rule]]
+id = "linux.link-down"
+match = '(?P<iface>\w+): link (?:is )?(?:down|Down)|Link is Down'
+severity = "warning"
+sources = ["kernel", "journal", "piped"]
+title = "Network interface {iface} lost its link"
+means = """
+{iface} stopped seeing a connection at the physical level — no cable, no signal,
+or the device on the other end went away. Everything routed over this interface
+stopped at that moment.
+"""
+cause = ["Unplugged or faulty cable", "The switch port went down or was reconfigured", "NIC driver reset"]
+fix = [
+  "Check current state: ip -br link",
+  "For physical hosts, confirm the cable and switch port",
+  "Look for a matching 'link up' shortly after — a brief flap is far less serious",
+]
+tags = ["network"]
+
+[[rule]]
+id = "linux.dhcp-failure"
+match = 'DHCPDISCOVER.*no (?:lease|offers)|dhclient.*No DHCPOFFERS|Failed to obtain.*lease'
+severity = "error"
+title = "Could not get an IP address from DHCP"
+means = """
+The machine asked the network for an address and nothing answered. Without a
+lease it has no usable IPv4 address, so essentially nothing on the network works.
+"""
+cause = [
+  "The DHCP server is down or unreachable",
+  "The interface is on a VLAN or switch port with no DHCP service",
+  "The DHCP pool is exhausted",
+]
+fix = [
+  "Confirm there is no address: ip -br addr",
+  "Ask again explicitly: dhclient -v <interface>",
+  "Verify link is actually up first — no link means no DHCP",
+]
+tags = ["network", "dhcp"]
+
+[[rule]]
+id = "linux.ntp-unsync"
+match = 'System clock time (?:jumped|adjusted)|Time (?:has been changed|jumped)|no servers can be used|Clock unsynchronised'
+severity = "warning"
+title = "The system clock is not synchronised"
+means = """
+The machine's clock is drifting or has been stepped abruptly. This breaks things
+in ways that look unrelated: TLS certificates appear invalid, authentication
+tokens are rejected, scheduled jobs run at the wrong time, and log timestamps
+across machines stop lining up.
+"""
+cause = ["No reachable time server", "Time sync disabled", "A VM resuming from suspend"]
+fix = [
+  "Check the current state: timedatectl status",
+  "Turn sync on: timedatectl set-ntp true",
+  "See which servers it is actually reaching: chronyc sources (or timedatectl show-timesync)",
+]
+tags = ["time", "ntp"]
+
+[[rule]]
+id = "linux.conntrack-full"
+match = 'nf_conntrack: (?:table full|nf_conntrack: table full)|conntrack table full, dropping packet'
+severity = "error"
+sources = ["kernel", "piped"]
+title = "The connection tracking table is full and packets are being dropped"
+means = """
+The firewall tracks every connection through this machine in a fixed-size table,
+and that table is now full. New connections are being silently dropped, which
+looks to users like random timeouts rather than a clear failure.
+"""
+cause = ["Genuinely high connection volume", "A flood or scan", "A table sized for a smaller workload"]
+fix = [
+  "See how close to the limit you are: sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max",
+  "Raise the ceiling: sysctl -w net.netfilter.nf_conntrack_max=262144",
+  "Persist it in /etc/sysctl.d/ so it survives reboot",
+]
+tags = ["network", "firewall", "kernel"]
+
+[[rule]]
+id = "linux.firmware-missing"
+match = 'firmware: failed to load (?P<fw>\S+)|Direct firmware load for (?P<fw2>\S+) failed'
+severity = "warning"
+sources = ["kernel", "piped"]
+title = "A device driver could not load its firmware"
+means = """
+A piece of hardware needs a firmware blob to work and the file is not installed.
+The device will be missing entirely, or running in a degraded fallback mode —
+this is a very common reason for Wi-Fi or a GPU to simply not appear.
+"""
+cause = ["The firmware package is not installed", "Non-free firmware excluded from the install media"]
+fix = [
+  "On Debian or Ubuntu: apt install firmware-linux-nonfree firmware-iwlwifi",
+  "On Fedora or RHEL: dnf install linux-firmware",
+  "Reboot, or reload the driver module, once the firmware is present",
+]
+tags = ["hardware", "firmware", "kernel"]
+
+[[rule]]
+id = "linux.usb-disconnect"
+match = 'usb (?P<port>[\d.-]+): USB disconnect'
+severity = "notice"
+sources = ["kernel", "piped"]
+title = "A USB device disconnected"
+means = """
+A USB device on port {port} went away. Expected if someone unplugged something.
+Repeated connect and disconnect cycles for the same device usually mean a failing
+cable or insufficient power rather than a user.
+"""
+cause = ["Someone unplugged it", "A marginal cable or hub", "Not enough bus power for the device"]
+fix = [
+  "Count the flaps: journalctl -k -b | grep -c 'USB disconnect'",
+  "If it is cycling, try a different cable or a powered hub",
+]
+tags = ["hardware", "usb"]
+
+[[rule]]
+id = "linux.watchdog"
+match = 'watchdog: BUG: soft lockup|watchdog: Watchdog detected hard LOCKUP'
+severity = "critical"
+sources = ["kernel", "piped"]
+title = "A CPU locked up"
+means = """
+A processor core stopped responding for long enough that the kernel's watchdog
+declared it stuck. The machine may have frozen visibly, and it is not in a state
+anyone should trust until it is rebooted.
+"""
+cause = ["A driver bug spinning with interrupts disabled", "Failing hardware", "Extreme load in a VM whose host is oversubscribed"]
+fix = [
+  "Capture the trace from the previous boot: journalctl -k -b -1 | grep -A30 lockup",
+  "Note which module appears in the trace — that is usually the culprit",
+  "Reboot; investigate the named driver before returning the box to service",
+]
+tags = ["kernel", "hardware", "hang"]
+
+[[rule]]
+id = "linux.core-dump"
+match = 'Process (?P<pid>\d+) \((?P<proc>[^)]+)\) of user \d+ dumped core'
+severity = "error"
+title = "{proc} crashed and left a core dump"
+means = """
+{proc} (process {pid}) died unexpectedly and systemd saved a snapshot of its
+memory. That dump is the best available evidence of why it crashed, and it will
+be rotated away eventually.
+"""
+cause = ["A bug in the program", "An unhandled fatal signal", "Corrupted or mismatched libraries"]
+fix = [
+  "List what was saved: coredumpctl list",
+  "Open the crash where it happened: coredumpctl debug {pid}",
+  "Extract it for someone else to analyse: coredumpctl dump {pid} > core.{pid}",
+]
+tags = ["crash", "process"]

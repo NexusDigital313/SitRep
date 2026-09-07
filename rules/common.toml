@@ -1,0 +1,120 @@
+# Rules that apply on any platform. Deliberately conservative: these patterns
+# appear in ordinary application logs too, so they stay at low severity unless
+# the message is unambiguous.
+
+[[rule]]
+id = "common.port-in-use"
+match = '(?:Address already in use|bind.*address already in use|EADDRINUSE)'
+severity = "error"
+title = "A service could not start because its port is already taken"
+means = """
+Something tried to listen on a network port that another process already holds.
+Only one program can own a port at a time, so the second one fails to start — and
+the message it prints often blames the wrong thing entirely.
+"""
+cause = [
+  "An old copy of the same service is still running",
+  "A different program happens to use the same port",
+  "A previous instance did not shut down cleanly",
+]
+fix = [
+  "Find the current owner (Linux): ss -lptn | grep :<port>",
+  "Find the current owner (macOS): lsof -nP -iTCP:<port> -sTCP:LISTEN",
+  "Stop the old instance properly rather than changing the port, if it is a leftover",
+]
+tags = ["network", "service"]
+
+[[rule]]
+id = "common.too-many-files"
+match = 'Too many open files|EMFILE|file descriptor limit'
+severity = "error"
+title = "A process hit the open file limit"
+means = """
+A program tried to open a file or network connection and was refused because it
+already holds as many as it is allowed. Note that sockets count as files, so busy
+servers hit this long before they open anything a human would call a file.
+"""
+cause = ["A limit set too low for the workload", "A leak — the program opens things and never closes them"]
+fix = [
+  "Check the current limits: ulimit -n",
+  "Raise it for a systemd service with LimitNOFILE=65535 in the unit file",
+  "See which process is actually holding them: lsof | awk '{print $2}' | sort | uniq -c | sort -rn | head",
+]
+tags = ["limits", "process"]
+
+[[rule]]
+id = "common.cert-expired"
+match = 'certificate has expired|certificate is not yet valid|CERTIFICATE_VERIFY_FAILED|x509: certificate has expired'
+severity = "error"
+title = "A TLS certificate has expired or is not yet valid"
+means = """
+A secure connection was refused because the certificate is outside its validity
+window. If the certificate really is current, the other explanation is that this
+machine's clock is wrong — a badly-set clock produces exactly this error.
+"""
+cause = ["The certificate genuinely expired and was not renewed", "The system clock is wrong", "An incomplete certificate chain"]
+fix = [
+  "Check the machine's own clock first — it is the cheaper thing to rule out: date",
+  "Inspect the certificate's dates: echo | openssl s_client -connect host:443 2>/dev/null | openssl x509 -noout -dates",
+  "If renewal is automated, check whether the renewal job has been failing quietly",
+]
+tags = ["tls", "network", "time"]
+
+[[rule]]
+id = "common.dns-failure"
+match = 'Temporary failure in name resolution|(?:could not|failed to) resolve host|NXDOMAIN|SERVFAIL|no such host'
+severity = "error"
+title = "DNS lookup failed"
+means = """
+A name could not be turned into an address. Everything that reaches out by
+hostname fails when this happens, so the symptom usually presents as "the network
+is down" even when connectivity itself is fine.
+"""
+cause = ["The configured DNS server is unreachable", "No DNS server configured at all", "The name genuinely does not exist"]
+fix = [
+  "Test resolution directly: dig example.com  (or: nslookup example.com)",
+  "See which resolvers are configured (Linux): resolvectl status",
+  "See which resolvers are configured (macOS): scutil --dns | grep nameserver",
+  "Prove it is DNS and not connectivity by trying an IP address directly",
+]
+tags = ["network", "dns"]
+
+[[rule]]
+id = "common.connection-refused"
+match = 'Connection refused|ECONNREFUSED'
+severity = "warning"
+title = "A connection was refused"
+means = """
+The machine at the other end was reachable and actively said no — nothing is
+listening on that port. This is a meaningfully different failure from a timeout:
+the network worked, the service was not there.
+"""
+cause = ["The service on the other end is not running", "It is listening on a different port or only on localhost", "A firewall rejecting rather than dropping"]
+fix = [
+  "Confirm the service is up on the target machine",
+  "Check what it is bound to — 127.0.0.1 only will refuse remote connections",
+  "Compare against a timeout: refused means reachable, timeout means blocked or unreachable",
+]
+tags = ["network"]
+
+[[rule]]
+id = "common.permission-denied"
+match = 'Permission denied|EACCES|Operation not permitted'
+severity = "warning"
+title = "An operation was denied by permissions"
+means = """
+Something was refused access to a file, device, or capability. Common and often
+benign in isolation, but it is the usual reason a service fails to start after
+files have been moved, restored from backup, or copied between machines.
+"""
+cause = [
+  "File ownership or mode does not permit it",
+  "The service runs as an unprivileged user by design",
+  "A security layer refused it — SELinux or AppArmor on Linux, TCC on macOS",
+]
+fix = [
+  "Check what the file actually allows: ls -la <path>",
+  "Confirm which user the service runs as before changing anything",
+  "If the permissions look correct, suspect SELinux, AppArmor, or macOS privacy settings",
+]
+tags = ["permissions"]

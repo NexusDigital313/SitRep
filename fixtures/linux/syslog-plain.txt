@@ -1,0 +1,5 @@
+Sep  7 03:11:02 web01 kernel: Out of memory: Killed process 3312 (python3)
+Sep  7 03:11:40 web01 sshd[8823]: Failed password for root from 198.51.100.7 port 40122 ssh2
+Sep  7 03:12:00 web01 systemd[1]: Failed to start OpenBSD Secure Shell server.
+Sep  7 03:12:15 web01 kernel: usb 1-1.2: USB disconnect, device number 14
+Sep  7 03:13:01 web01 chronyd[701]: System clock time jumped by -4.213 seconds

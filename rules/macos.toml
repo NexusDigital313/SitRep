@@ -1,0 +1,280 @@
+# macOS rule pack. Sources are the unified log (`log show`), launchd, and the
+# crash reports under ~/Library/Logs/DiagnosticReports.
+
+[[rule]]
+id = "macos.panic"
+match = 'panic\(cpu \d+|Kernel panic|panic_context|previous shutdown cause: -128'
+severity = "critical"
+title = "The machine kernel panicked"
+means = """
+macOS hit an error it could not recover from and restarted itself. This is the
+Mac equivalent of a blue screen. The panic log names whichever driver or
+extension was executing at the time, which is nearly always the actual cause.
+"""
+cause = [
+  "A third-party kernel extension or system extension, most often VPN, antivirus, or virtualization software",
+  "Failing RAM or storage",
+  "An external device with a bad driver",
+]
+fix = [
+  "Read the panic report: ls -lt /Library/Logs/DiagnosticReports/*.panic | head -3",
+  "The line beginning 'Backtrace' names the responsible extension",
+  "List non-Apple extensions still loaded: kmutil showloaded --no-kernel-components",
+  "Run Apple Diagnostics to rule out hardware: reboot holding D",
+]
+tags = ["kernel", "crash"]
+
+[[rule]]
+id = "macos.jetsam"
+match = 'memorystatus.*kill|jetsam.*kill|highwater.*kill|killing_specific_process'
+severity = "error"
+title = "macOS killed an app to reclaim memory"
+means = """
+The system ran low on memory and terminated a process to recover. On a Mac this
+looks less dramatic than on Linux — an app simply vanishes, sometimes with no
+message at all — but the underlying event is the same: demand exceeded what the
+machine could supply.
+"""
+cause = [
+  "Memory pressure from too many applications or one very large one",
+  "A memory leak in a long-running app",
+  "Startup disk too full for swap to grow",
+]
+fix = [
+  "Check pressure now: memory_pressure",
+  "Find the heaviest processes: top -o mem -l 1 -n 15",
+  "Swap needs free disk — confirm you have headroom: df -h /",
+]
+tags = ["memory"]
+
+[[rule]]
+id = "macos.app-crash"
+match = 'Crashed Thread|EXC_BAD_ACCESS|EXC_CRASH|SIGABRT|SIGSEGV|Termination Reason'
+severity = "error"
+sources = ["crash", "piped"]
+title = "An application crashed"
+means = """
+A program terminated abnormally and macOS wrote a crash report. The report
+records exactly where it died. EXC_BAD_ACCESS means it touched memory it did not
+own; SIGABRT usually means the program deliberately gave up on itself.
+"""
+cause = ["A bug in the application", "An incompatible plug-in or injected library", "A corrupt preference or cache file"]
+fix = [
+  "Find the newest reports: ls -lt ~/Library/Logs/DiagnosticReports/ | head -10",
+  "Check whether the app has an update — most crashes are already-known bugs",
+  "If it crashes on every launch, try moving its preference file aside from ~/Library/Preferences/",
+]
+tags = ["crash", "process"]
+
+[[rule]]
+id = "macos.launchd-throttle"
+match = 'Service exited with abnormal code|(?:Throttling respawn|will restart in) (?P<secs>\d+) seconds|exited due to (?:signal|SIGKILL)'
+severity = "warning"
+sources = ["launchd", "unifiedlog", "piped"]
+title = "A background service keeps exiting and is being throttled"
+means = """
+launchd started a background job, it exited immediately, and launchd is now
+deliberately slowing down its restart attempts. Something is failing every single
+time it runs — usually a missing file, a bad path, or a permissions problem.
+"""
+cause = [
+  "The program the job points at has moved or been deleted",
+  "The job lacks permission to something it needs, such as Full Disk Access",
+  "A configuration error in the plist",
+]
+fix = [
+  "List jobs with a non-zero last exit status: launchctl list | awk '$1 != \"-\" && $1 != \"0\"'",
+  "Inspect one closely: launchctl print gui/$(id -u)/<label>",
+  "Leftovers from uninstalled software can be removed from ~/Library/LaunchAgents/",
+]
+tags = ["launchd", "service"]
+
+[[rule]]
+id = "macos.sandbox-deny"
+match = 'Sandbox: (?P<proc>\S+)\(\d+\) deny|deny\(1\) file-(?:read|write)'
+severity = "warning"
+title = "The sandbox blocked an app from reading or writing something"
+means = """
+macOS stopped an application from touching a file or resource outside what it is
+permitted to access. The app was not broken — it was refused — and the error it
+shows the user will usually be vague and unhelpful about why.
+"""
+cause = [
+  "The app lacks a privacy permission such as Full Disk Access or Files and Folders",
+  "It tried to reach a path its entitlements do not cover",
+]
+fix = [
+  "Grant access in System Settings > Privacy & Security > Full Disk Access",
+  "See exactly what was denied: log show --last 1h --predicate 'process == \"sandboxd\"'",
+]
+tags = ["security", "sandbox"]
+
+[[rule]]
+id = "macos.gatekeeper"
+match = 'code signature|Gatekeeper|rejected.*unsigned|CSSMERR_TP_CERT_EXPIRED|invalid signature'
+severity = "warning"
+title = "Code signing or Gatekeeper rejected something"
+means = """
+macOS refused to run or load code because its signature was missing, expired, or
+did not match. This protects against tampered software, but it also fires for
+perfectly legitimate apps that were built without a certificate, or downloaded in
+a way that stripped it.
+"""
+cause = [
+  "An unsigned or ad-hoc signed application",
+  "A developer certificate that has expired",
+  "The file was modified after signing, including by some archive tools",
+]
+fix = [
+  "Check what macOS thinks of it: codesign -dv --verbose=4 /path/to/App.app",
+  "Test the Gatekeeper verdict directly: spctl -a -vv /path/to/App.app",
+  "For software you trust: xattr -d com.apple.quarantine /path/to/App.app",
+]
+tags = ["security", "codesign"]
+
+[[rule]]
+id = "macos.apfs-error"
+match = 'apfs.*(?:error|corrupt)|fsck_apfs.*error|disk\d+s\d+: I/O error'
+severity = "critical"
+title = "The filesystem reported an error"
+means = """
+APFS found something inconsistent on disk, or the drive failed an operation. On
+Apple silicon and modern Macs the SSD is soldered in, so a genuinely failing
+drive is a whole-machine problem rather than a part to swap.
+"""
+cause = ["A failing SSD", "An unclean shutdown or power loss", "A failing or badly powered external enclosure"]
+fix = [
+  "Run First Aid from Disk Utility, or: diskutil verifyVolume /",
+  "Check the SSD's own health: system_profiler SPNVMeDataType | grep -A3 Health",
+  "Ensure you have a current backup before doing anything else",
+]
+tags = ["disk", "filesystem"]
+
+[[rule]]
+id = "macos.disk-full"
+match = 'No space left on device|disk is (?:critically )?full|volume is full'
+severity = "error"
+title = "The startup disk is full"
+means = """
+A write failed because the disk is out of room. On macOS this is worse than it
+sounds: the system needs free space for swap and for APFS snapshots, so a full
+disk causes apps to hang and crash in ways that never mention storage.
+"""
+cause = ["Time Machine local snapshots consuming space", "Large caches or downloads", "Xcode simulators and derived data"]
+fix = [
+  "See real free space, including what snapshots hold: diskutil info / | grep -i free",
+  "List local snapshots: tmutil listlocalsnapshots /",
+  "Reclaim from snapshots: tmutil thinlocalsnapshots / 10000000000 4",
+]
+tags = ["disk", "capacity"]
+
+[[rule]]
+id = "macos.wifi-drop"
+match = 'AirPort.*(?:disassociat|deauth)|en0.*link.*down|WiFi.*disconnect|_disconnect_and_reassociate'
+severity = "warning"
+title = "Wi-Fi disconnected"
+means = """
+The Mac dropped its wireless connection. A single event is unremarkable; a steady
+rhythm of them points at interference, a marginal signal, or a router that keeps
+dropping the client.
+"""
+cause = ["Weak signal or interference", "The access point deauthenticated the client", "Roaming between access points", "Router firmware issues"]
+fix = [
+  "Check current link quality: system_profiler SPAirPortDataType | grep -A5 'Current Network'",
+  "Look at the pattern rather than one event: log show --last 1h --predicate 'subsystem == \"com.apple.wifi\"'",
+  "Forgetting and rejoining the network clears a surprising amount of this",
+]
+tags = ["network", "wifi"]
+
+[[rule]]
+id = "macos.thermal"
+match = 'thermal(?:_| )(?:pressure|state|trap)|CPU_Speed_Limit|kernel.*thermal'
+severity = "warning"
+title = "The Mac is thermally throttling"
+means = """
+The machine got hot enough that macOS reduced performance to bring the
+temperature down. Nothing is damaged — this is the system protecting itself —
+but everything will feel slower while it lasts.
+"""
+cause = ["Sustained heavy load", "Blocked vents, or use on a soft surface", "Dust in the fans", "High ambient temperature"]
+fix = [
+  "See the current thermal level: pmset -g therm",
+  "Find what is driving it: top -o cpu -l 1 -n 10",
+  "Clear the vents and check the machine has airflow underneath",
+]
+tags = ["hardware", "thermal"]
+
+[[rule]]
+id = "macos.xpc-interrupted"
+match = 'XPC connection (?:interrupted|invalid)|connection to service (?:named )?(?P<svc>[\w.]+) was interrupted'
+severity = "notice"
+title = "An internal service connection dropped"
+means = """
+Two parts of macOS were talking over XPC and the connection broke, usually
+because one side crashed or was terminated. Individually these are noise and
+macOS reconnects automatically. In quantity, they mean a background service is
+crash-looping somewhere behind the scenes.
+"""
+cause = ["The service on the other end crashed", "It was killed under memory pressure", "A normal restart during an update"]
+fix = [
+  "Only worth chasing if it repeats — check the volume: log show --last 1h --predicate 'eventMessage CONTAINS \"XPC connection\"' | wc -l",
+  "Look for a crash report from the named service in ~/Library/Logs/DiagnosticReports/",
+]
+tags = ["service"]
+
+[[rule]]
+id = "macos.timemachine-fail"
+match = 'Backup failed|Time Machine.*(?:error|failed)|backupd.*Error'
+severity = "warning"
+title = "A Time Machine backup failed"
+means = """
+The scheduled backup did not complete. Time Machine is quiet about this by
+design, so backups can silently stop working for months before anyone notices —
+which is exactly when they are needed.
+"""
+cause = ["The destination disk is full or unreachable", "A corrupt sparsebundle on a network destination", "The source disk had errors mid-backup"]
+fix = [
+  "Read the backup log directly: log show --last 24h --predicate 'subsystem == \"com.apple.TimeMachine\"' --info",
+  "Confirm the destination is present: tmutil destinationinfo",
+  "Check when the last successful backup actually was: tmutil latestbackup",
+]
+tags = ["backup"]
+
+[[rule]]
+id = "macos.kext-reject"
+match = 'kext.*(?:not loaded|denied|blocked)|Extension.*rejected|System extension.*(?:blocked|denied)'
+severity = "warning"
+title = "A kernel or system extension was blocked from loading"
+means = """
+macOS refused to load a driver-level extension. Modern macOS requires explicit
+user approval for these, and requires Reduced Security on Apple silicon for the
+older kext variety. Whatever hardware or software needed it will not work.
+"""
+cause = [
+  "The extension needs approval in System Settings > Privacy & Security",
+  "It is a legacy kext, which Apple silicon requires Reduced Security to load",
+  "It is unsigned or notarized incorrectly",
+]
+fix = [
+  "Look for a pending approval in System Settings > Privacy & Security",
+  "See what is loaded now: kmutil showloaded --no-kernel-components",
+  "On Apple silicon, legacy kexts need Reduced Security set from Recovery",
+]
+tags = ["kernel", "security"]
+
+[[rule]]
+id = "macos.spindump-hang"
+match = 'hang.*detected|Application Not Responding|watchdog.*timeout|spindump'
+severity = "warning"
+title = "An application stopped responding"
+means = """
+A program failed to respond to the system for long enough that macOS took a
+sample of what it was doing — the spinning beachball, recorded. The sample shows
+which call it was stuck in.
+"""
+cause = ["Blocking work on the main thread", "Waiting on a network or disk operation that never returned", "A deadlock in the app"]
+fix = [
+  "Find the sample: ls -lt ~/Library/Logs/DiagnosticReports/*.hang 2>/dev/null | head -5",
+  "Sample a currently-hung app yourself: sample <pid> 5 -file /tmp/hang.txt",
+]
+tags = ["hang", "process"]

@@ -1,0 +1,18 @@
+{"__REALTIME_TIMESTAMP":"1788700000000000","PRIORITY":"4","_TRANSPORT":"kernel","MESSAGE":"mysqld invoked oom-killer: gfp_mask=0x100cca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=0"}
+{"__REALTIME_TIMESTAMP":"1788700001000000","PRIORITY":"3","_TRANSPORT":"kernel","MESSAGE":"Out of memory: Killed process 4821 (mysqld) total-vm:8420144kB, anon-rss:6291456kB"}
+{"__REALTIME_TIMESTAMP":"1788700002000000","PRIORITY":"3","_SYSTEMD_UNIT":"mysql.service","SYSLOG_IDENTIFIER":"systemd","MESSAGE":"mysql.service: Main process exited, code=killed, status=9/KILL"}
+{"__REALTIME_TIMESTAMP":"1788700003000000","PRIORITY":"3","_SYSTEMD_UNIT":"mysql.service","SYSLOG_IDENTIFIER":"systemd","MESSAGE":"mysql.service: Failed with result 'signal'."}
+{"__REALTIME_TIMESTAMP":"1788700004000000","PRIORITY":"3","_SYSTEMD_UNIT":"mysql.service","SYSLOG_IDENTIFIER":"systemd","MESSAGE":"mysql.service: Start request repeated too quickly."}
+{"__REALTIME_TIMESTAMP":"1788700010000000","PRIORITY":"2","_TRANSPORT":"kernel","MESSAGE":"EXT4-fs error (device sdb1): ext4_find_entry:1455: inode #2: comm ls: reading directory lblock 0"}
+{"__REALTIME_TIMESTAMP":"1788700011000000","PRIORITY":"2","_TRANSPORT":"kernel","MESSAGE":"blk_update_request: I/O error, dev sdb, sector 2048 op 0x0:(READ) flags 0x0"}
+{"__REALTIME_TIMESTAMP":"1788700012000000","PRIORITY":"2","_TRANSPORT":"kernel","MESSAGE":"EXT4-fs (sdb1): Remounting filesystem read-only"}
+{"__REALTIME_TIMESTAMP":"1788700020000000","PRIORITY":"4","_SYSTEMD_UNIT":"ssh.service","SYSLOG_IDENTIFIER":"sshd","_PID":"9001","MESSAGE":"Failed password for invalid user admin from 203.0.113.44 port 51422 ssh2"}
+{"__REALTIME_TIMESTAMP":"1788700021000000","PRIORITY":"4","_SYSTEMD_UNIT":"ssh.service","SYSLOG_IDENTIFIER":"sshd","_PID":"9002","MESSAGE":"Failed password for invalid user admin from 203.0.113.44 port 51423 ssh2"}
+{"__REALTIME_TIMESTAMP":"1788700022000000","PRIORITY":"4","_SYSTEMD_UNIT":"ssh.service","SYSLOG_IDENTIFIER":"sshd","_PID":"9003","MESSAGE":"Invalid user postgres from 203.0.113.44 port 51424"}
+{"__REALTIME_TIMESTAMP":"1788700030000000","PRIORITY":"3","_TRANSPORT":"kernel","MESSAGE":"nginx[2211]: segfault at 0 ip 00007f8a2c1b4e30 sp 00007ffd4a1b2c50 error 4 in libc.so.6"}
+{"__REALTIME_TIMESTAMP":"1788700031000000","PRIORITY":"3","SYSLOG_IDENTIFIER":"systemd-coredump","MESSAGE":"Process 2211 (nginx) of user 33 dumped core."}
+{"__REALTIME_TIMESTAMP":"1788700040000000","PRIORITY":"4","_TRANSPORT":"kernel","MESSAGE":"nf_conntrack: nf_conntrack: table full, dropping packet"}
+{"__REALTIME_TIMESTAMP":"1788700050000000","PRIORITY":"3","SYSLOG_IDENTIFIER":"backup.sh","MESSAGE":"tar: /mnt/backup/db.tar.gz: Cannot write: No space left on device"}
+{"__REALTIME_TIMESTAMP":"1788700060000000","PRIORITY":"4","SYSLOG_IDENTIFIER":"widgetd","MESSAGE":"widget 4821 failed handshake after 91 retries"}
+{"__REALTIME_TIMESTAMP":"1788700061000000","PRIORITY":"4","SYSLOG_IDENTIFIER":"widgetd","MESSAGE":"widget 7734 failed handshake after 12 retries"}
+{"__REALTIME_TIMESTAMP":"1788700062000000","PRIORITY":"4","SYSLOG_IDENTIFIER":"widgetd","MESSAGE":"widget 1002 failed handshake after 5 retries"}
