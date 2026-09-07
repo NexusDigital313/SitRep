@@ -320,9 +320,7 @@ pub fn derive_pattern(message: &str) -> String {
 pub fn derive_id(message: &str) -> String {
     let words: Vec<String> = message
         .split_whitespace()
-        .map(|w| {
-            w.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
-        })
+        .map(|w| w.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase())
         .filter(|w| w.len() > 2 && !w.chars().all(|c| c.is_ascii_digit()))
         .take(4)
         .collect();

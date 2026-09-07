@@ -92,7 +92,6 @@ pub enum Source {
     Piped,
 }
 
-
 /// A single normalized log line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -113,15 +112,7 @@ pub struct Event {
 impl Event {
     pub fn new(source: Source, severity: Severity, raw: impl Into<String>) -> Self {
         let raw = raw.into();
-        Self {
-            timestamp: None,
-            unit: None,
-            pid: None,
-            severity,
-            source,
-            message: raw.clone(),
-            raw,
-        }
+        Self { timestamp: None, unit: None, pid: None, severity, source, message: raw.clone(), raw }
     }
 
     pub fn with_message(mut self, message: impl Into<String>) -> Self {

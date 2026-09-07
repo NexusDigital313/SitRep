@@ -52,16 +52,43 @@ logs leaves the machine.
 
 ## Install
 
+The command is named for its platform. One source tree, one binary per OS:
+
+| Platform | Command | Get it |
+|---|---|---|
+| macOS (Intel + Apple silicon) | **`MacSitrep`** | `MacSitrep-universal.tar.gz` from Releases |
+| Linux x86_64 / arm64 | **`LinuxSitRep`** | `LinuxSitRep-*.tar.gz` or the `.deb` from Releases |
+
 ```sh
-cargo install --path .        # from a clone
-cargo install sitrep          # once published
+# From a clone — builds and installs both `sitrep` and the platform alias
+make install                       # -> ~/.cargo/bin, no sudo
+sudo make install PREFIX=/usr/local
+
+# Debian / Ubuntu
+sudo dpkg -i sitrep_0.1.0_amd64.deb    # installs LinuxSitRep
+
+# Plain cargo — gives you `sitrep` only, no alias
+cargo install --path .
 ```
 
-One static-ish binary, no runtime, no dependencies to install on the target.
-Build it once per platform: the macOS and Linux collectors live in the same
-source tree and are selected at compile time.
+Linux release binaries are statically linked against musl: one file, no
+dependencies, runs on any distribution including ancient glibc. macOS ships a
+universal binary. Every archive also contains a `sitrep` symlink, so either
+name works.
+
+`sitrep` is the canonical name and `MacSitrep` / `LinuxSitRep` are symlinks to
+it — but the program reads `argv[0]`, so `--help`, `--version` and every error
+message name whichever alias you actually typed.
+
+If `~/.cargo/bin` is not on your `PATH`:
+
+```sh
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
+```
 
 ## Use
+
+Examples below say `sitrep`; substitute `MacSitrep` or `LinuxSitRep` freely.
 
 ```sh
 sitrep                        # what is wrong with this machine
@@ -147,14 +174,40 @@ reporting a clean bill of health.
 ## Development
 
 ```sh
-cargo test                    # 51 tests, no network, no fixtures needed at runtime
-cargo build --release
+make test                     # 63 tests
+make lint                     # clippy -D warnings, plus rustfmt
+make build
 ```
 
 Both platform collectors compile on both platforms — only the dispatch is
 conditional — so the Linux collector stays type-checked and unit-tested when
 built on a Mac. Fixtures under `fixtures/` are real log captures used to
 exercise the Linux path from a development machine that isn't Linux.
+
+### CI
+
+`ci.yml` runs three jobs:
+
+- **test** — fmt, clippy and the full suite on Linux and macOS.
+- **smoke-linux** — runs the binary against a *live* systemd machine. The unit
+  and fixture tests cover the parsing; this is the only thing exercising the
+  real `journalctl` / `systemctl` / `dmesg` invocations, so it is where a
+  Mac-developed Linux collector actually gets proven.
+- **offline** — enforces the offline guarantee as a test. It fails the build if
+  a networking crate enters the dependency tree, if anything in `src/` touches
+  a socket API, or if an optional feature appears that could reintroduce one.
+
+`release.yml` fires on a `v*` tag and publishes musl-static Linux binaries
+(x86_64 + arm64), `.deb` packages, and a macOS universal binary, each with a
+SHA-256. It verifies the Linux binaries are genuinely static and installs the
+`.deb` to confirm both command names work before publishing.
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The arm64 Linux job uses GitHub's ARM runners, which are free on public repos.
+On a private repo, drop that matrix entry or build it with `cross`.
 
 ## License
 

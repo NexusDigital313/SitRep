@@ -1,0 +1,6 @@
+edition = "2024"
+# The code is written with short struct literals, calls and matches on one line.
+# "Max" raises rustfmt's width heuristics to max_width so it keeps them that way
+# instead of exploding every two-field initializer across four lines.
+use_small_heuristics = "Max"
+max_width = 100

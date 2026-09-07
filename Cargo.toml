@@ -9,11 +9,6 @@ readme = "README.md"
 keywords = ["logs", "journalctl", "dmesg", "systemd", "diagnostics"]
 categories = ["command-line-utilities"]
 
-[features]
-default = []
-# Optional: send only the lines the rule engine could not explain to Claude
-# for a narrative summary. Off by default; the tool is fully offline without it.
-ai = []
 
 [dependencies]
 anyhow = "1.0.104"
@@ -25,6 +20,28 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 terminal_size = "0.4.4"
 toml = "1.1.5"
+
+# `cargo deb` builds the Debian package. The binary is installed under the
+# Linux alias; a symlink gives `sitrep` as well so docs and scripts still work.
+# NOTE: set a real maintainer before publishing a package anywhere.
+[package.metadata.deb]
+name = "sitrep"
+maintainer = "Jacob <you@example.com>"
+copyright = "2026, sitrep contributors"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Reads the logs your machine already keeps - journalctl, systemctl and dmesg - \
+and prints a ranked report of what is actually wrong, written for a human. \
+Runs entirely offline: no network, no account, no telemetry."""
+section = "admin"
+priority = "optional"
+# Statically linked against musl, so it needs nothing at runtime.
+depends = ""
+assets = [
+    ["target/release/sitrep", "usr/bin/LinuxSitRep", "755"],
+    ["README.md", "usr/share/doc/sitrep/README.md", "644"],
+]
+maintainer-scripts = "packaging/debian"
 
 [profile.release]
 opt-level = "z"

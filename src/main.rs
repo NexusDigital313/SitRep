@@ -6,7 +6,7 @@ mod report;
 mod rules;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
 use collect::CollectOpts;
 use event::{Event, Source};
@@ -14,8 +14,32 @@ use report::Verdict;
 use rules::RuleSet;
 use std::io::IsTerminal;
 
+/// The command is installed under a platform-specific name (`MacSitrep`,
+/// `LinuxSitRep`) symlinked to the canonical `sitrep` binary. Parsing through
+/// argv[0] rather than `Cli::parse()` means `--help` and every usage and error
+/// message names whichever alias the user actually typed, instead of always
+/// saying "sitrep".
+fn invoked_as() -> &'static str {
+    std::env::args_os()
+        .next()
+        .as_deref()
+        .map(std::path::Path::new)
+        .and_then(std::path::Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        // clap wants a 'static name. Leaking one short string that lives as
+        // long as the process is the honest way to say "this never frees".
+        .map(|n| &*n.leak())
+        .unwrap_or("sitrep")
+}
+
 fn main() {
-    let args = Cli::parse();
+    let name = invoked_as();
+    let matches = Cli::command().name(name).bin_name(name).get_matches();
+    let args = match Cli::from_arg_matches(&matches) {
+        Ok(a) => a,
+        Err(e) => e.exit(),
+    };
 
     // Decide colour once, globally. render.rs asks the terminal per-write via
     // if_supports_color, but this file styles a few strings directly; an
@@ -38,11 +62,7 @@ fn run(args: &Cli) -> Result<i32> {
 
     // User rules extend the builtins; ~/.config/sitrep/rules is checked even
     // when --rules-dir is not given.
-    let dir = args
-        .rules_dir
-        .clone()
-        .map(std::path::PathBuf::from)
-        .or_else(default_rules_dir);
+    let dir = args.rules_dir.clone().map(std::path::PathBuf::from).or_else(default_rules_dir);
     if let Some(dir) = dir {
         problems.extend(ruleset.load_dir(&dir)?);
     }
@@ -70,11 +90,7 @@ fn default_rules_dir() -> Option<std::path::PathBuf> {
 }
 
 fn opts_from(args: &Cli) -> CollectOpts {
-    CollectOpts {
-        since: args.since.clone(),
-        include_info: args.all,
-        ..Default::default()
-    }
+    CollectOpts { since: args.since.clone(), include_info: args.all, ..Default::default() }
 }
 
 /// The default action: read this machine (or the piped input) and report.
@@ -226,7 +242,10 @@ fn learn(ruleset: &RuleSet, args: &Cli, write: bool) -> Result<i32> {
     let report = report::build(collection, ruleset, args.all);
 
     if report.unexplained.is_empty() {
-        println!("\n  {}\n", render::dim("Every notable line was already explained — nothing to learn."));
+        println!(
+            "\n  {}\n",
+            render::dim("Every notable line was already explained — nothing to learn.")
+        );
         return Ok(0);
     }
 

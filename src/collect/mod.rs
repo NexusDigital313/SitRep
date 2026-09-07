@@ -5,8 +5,8 @@ use crate::event::{Event, Severity};
 use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::LazyLock;
 use std::process::Command;
+use std::sync::LazyLock;
 
 // Both collectors compile everywhere — they use nothing but std, serde and
 // jiff, and shelling out to a missing command is already handled. Only the
@@ -18,10 +18,10 @@ pub mod linux;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod macos;
 
-#[cfg(target_os = "macos")]
-pub use macos as platform;
 #[cfg(not(target_os = "macos"))]
 pub use linux as platform;
+#[cfg(target_os = "macos")]
+pub use macos as platform;
 
 pub mod piped;
 
@@ -53,7 +53,6 @@ fn format_micros(us: &str) -> Option<String> {
         .ok()
         .map(|ts| ts.strftime("%Y-%m-%d %H:%M:%S").to_string())
 }
-
 
 #[derive(Debug, Clone)]
 pub struct CollectOpts {
@@ -115,14 +114,11 @@ pub fn finish(c: &mut Collection, opts: &CollectOpts) {
 /// Runs a command and returns stdout. Never panics; a missing binary or a
 /// non-zero exit becomes an `Err` the caller turns into a collection note.
 pub fn run(program: &str, args: &[&str]) -> std::result::Result<String, String> {
-    let out = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => format!("`{program}` is not installed"),
-            std::io::ErrorKind::PermissionDenied => format!("not allowed to run `{program}`"),
-            _ => format!("could not run `{program}`: {e}"),
-        })?;
+    let out = Command::new(program).args(args).output().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => format!("`{program}` is not installed"),
+        std::io::ErrorKind::PermissionDenied => format!("not allowed to run `{program}`"),
+        _ => format!("could not run `{program}`: {e}"),
+    })?;
 
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
 
@@ -239,7 +235,6 @@ pub fn hostname() -> String {
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "this machine".into())
 }
-
 
 #[cfg(test)]
 mod tests {

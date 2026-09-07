@@ -111,13 +111,11 @@ pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Rep
             if !include_info && !event.severity.is_notable() {
                 continue;
             }
-            let entry = unknown.entry(fingerprint(&event.message)).or_insert_with(|| {
-                Unexplained {
-                    severity: event.severity,
-                    count: 0,
-                    sample: event.message.clone(),
-                    unit: event.unit.clone(),
-                }
+            let entry = unknown.entry(fingerprint(&event.message)).or_insert_with(|| Unexplained {
+                severity: event.severity,
+                count: 0,
+                sample: event.message.clone(),
+                unit: event.unit.clone(),
             });
             entry.count += 1;
             entry.severity = entry.severity.min(event.severity);
@@ -170,10 +168,7 @@ pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Rep
     // Severity first, then by how often it happened, then alphabetically so
     // two runs over the same data produce byte-identical output.
     findings.sort_by(|a, b| {
-        a.severity
-            .cmp(&b.severity)
-            .then(b.count.cmp(&a.count))
-            .then(a.title.cmp(&b.title))
+        a.severity.cmp(&b.severity).then(b.count.cmp(&a.count)).then(a.title.cmp(&b.title))
     });
 
     let mut unexplained: Vec<Unexplained> = unknown.into_values().collect();
@@ -219,10 +214,7 @@ mod tests {
     fn collection_with(lines: &[(Severity, &str)]) -> Collection {
         Collection {
             hostname: "test".into(),
-            events: lines
-                .iter()
-                .map(|(sev, msg)| Event::new(Source::Kernel, *sev, *msg))
-                .collect(),
+            events: lines.iter().map(|(sev, msg)| Event::new(Source::Kernel, *sev, *msg)).collect(),
             ..Default::default()
         }
     }
@@ -255,7 +247,8 @@ mod tests {
     #[test]
     fn the_oom_title_names_the_process_it_killed() {
         let (rules, _) = RuleSet::builtin();
-        let c = collection_with(&[(Severity::Critical, "Out of memory: Killed process 4821 (mysqld)")]);
+        let c =
+            collection_with(&[(Severity::Critical, "Out of memory: Killed process 4821 (mysqld)")]);
         let r = build(c, &rules, false);
         assert!(
             r.findings.iter().any(|f| f.title.contains("mysqld")),
@@ -302,7 +295,10 @@ mod tests {
     fn failed_units_alone_make_a_machine_degraded() {
         let (rules, _) = RuleSet::builtin();
         let c = Collection {
-            failed_units: vec![FailedUnit { name: "nginx.service".into(), detail: "failed".into() }],
+            failed_units: vec![FailedUnit {
+                name: "nginx.service".into(),
+                detail: "failed".into(),
+            }],
             ..Default::default()
         };
         assert_eq!(build(c, &rules, false).verdict, Verdict::Degraded);

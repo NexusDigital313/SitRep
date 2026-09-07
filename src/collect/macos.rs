@@ -1,6 +1,6 @@
 //! macOS collector: the unified log, launchd, and the diagnostic reports.
 
-use super::{Collection, CollectOpts, FailedUnit, hostname, run};
+use super::{CollectOpts, Collection, FailedUnit, hostname, run};
 use crate::event::{Event, Severity, Source};
 use anyhow::Result;
 use serde::Deserialize;
@@ -158,8 +158,7 @@ fn collect_launchd(c: &mut Collection) {
             format!("exited with status {code}")
         };
 
-        c.failed_units
-            .push(FailedUnit { name: label.trim().to_string(), detail: detail.clone() });
+        c.failed_units.push(FailedUnit { name: label.trim().to_string(), detail: detail.clone() });
 
         // Synthesized so the rule engine can explain it like any other line.
         let msg = format!("{}: Service exited with abnormal code {code} — {detail}", label.trim());
@@ -187,8 +186,7 @@ fn signal_name(n: i32) -> &'static str {
 /// Crash reports are files, not log lines. Their filenames alone say enough to
 /// be worth reporting; reading every report body would be slow and mostly noise.
 fn collect_crash_reports(c: &mut Collection) {
-    let mut dirs: Vec<std::path::PathBuf> =
-        vec!["/Library/Logs/DiagnosticReports".into()];
+    let mut dirs: Vec<std::path::PathBuf> = vec!["/Library/Logs/DiagnosticReports".into()];
     if let Some(home) = std::env::var_os("HOME") {
         dirs.push(std::path::Path::new(&home).join("Library/Logs/DiagnosticReports"));
     }

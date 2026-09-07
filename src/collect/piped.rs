@@ -6,7 +6,7 @@
 //! Format is sniffed rather than declared, because asking the user to label
 //! their own paste is a bad trade for a few lines of detection.
 
-use super::{Collection, CollectOpts, field_text, format_micros, guess_severity, strip_preamble};
+use super::{CollectOpts, Collection, field_text, format_micros, guess_severity, strip_preamble};
 use crate::event::{Event, Severity, Source};
 use anyhow::{Context, Result};
 use serde_json::Value;

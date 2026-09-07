@@ -10,10 +10,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_sitrep");
 
 fn run(args: &[&str]) -> (String, i32) {
     let out = Command::new(BIN).args(args).output().expect("binary should run");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        out.status.code().unwrap_or(-1),
-    )
+    (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code().unwrap_or(-1))
 }
 
 #[test]

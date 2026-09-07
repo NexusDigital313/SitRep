@@ -12,7 +12,8 @@ pub const DEFAULT_SINCE: &str = "boot";
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "sitrep",
+    // No `name` here on purpose — main() sets it from argv[0] so the help text
+    // matches the alias the command was invoked under.
     version,
     about = "Reads your system logs and tells you what's wrong, in English.",
     long_about = "sitrep reads the logs your operating system already keeps — journalctl, \

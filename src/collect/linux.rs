@@ -5,7 +5,7 @@
 //! priority fields; the JSON export is stable and unambiguous.
 
 use super::{
-    Collection, CollectOpts, FailedUnit, field_text, format_micros, guess_severity, hostname, run,
+    CollectOpts, Collection, FailedUnit, field_text, format_micros, guess_severity, hostname, run,
     strip_preamble,
 };
 use crate::event::{Event, Severity, Source};
@@ -127,23 +127,17 @@ fn collect_dmesg(c: &mut Collection) {
             continue;
         }
         // dmesg without --notime prefixes "[  123.456] ".
-        let message = line
-            .strip_prefix('[')
-            .and_then(|r| r.split_once("] "))
-            .map(|(_, m)| m)
-            .unwrap_or(line);
+        let message =
+            line.strip_prefix('[').and_then(|r| r.split_once("] ")).map(|(_, m)| m).unwrap_or(line);
 
-        c.events.push(
-            Event::new(Source::Kernel, guess_severity(message), line).with_message(message),
-        );
+        c.events
+            .push(Event::new(Source::Kernel, guess_severity(message), line).with_message(message));
     }
 }
 
 fn collect_failed_units(c: &mut Collection) {
-    let out = match run(
-        "systemctl",
-        &["--failed", "--no-legend", "--no-pager", "--plain", "--all"],
-    ) {
+    let out = match run("systemctl", &["--failed", "--no-legend", "--no-pager", "--plain", "--all"])
+    {
         Ok(o) => o,
         Err(e) => {
             c.notes.push(format!("could not list failed units: {e}"));
@@ -183,7 +177,8 @@ fn collect_syslog_fallback(c: &mut Collection) {
             let (message, unit, pid) = strip_preamble(line);
             // No severity filter — see the note in collect::piped::from_text.
             let severity = guess_severity(message);
-            let source = if unit.as_deref() == Some("kernel") { Source::Kernel } else { Source::Journal };
+            let source =
+                if unit.as_deref() == Some("kernel") { Source::Kernel } else { Source::Journal };
             c.events.push(
                 Event::new(source, severity, line)
                     .with_message(message)
@@ -201,4 +196,3 @@ fn read_os_pretty_name() -> Option<String> {
         .find_map(|l| l.strip_prefix("PRETTY_NAME="))
         .map(|v| v.trim_matches('"').to_string())
 }
-

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    [ -L /usr/bin/sitrep ] && rm -f /usr/bin/sitrep || true
+fi

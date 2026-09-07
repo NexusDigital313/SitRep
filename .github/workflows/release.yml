@@ -1,0 +1,174 @@
+name: release
+
+# Tag a version to cut a release:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (artifacts only, no release published)"
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            debarch: amd64
+          # GitHub's arm64 Linux runners are free for public repositories. On a
+          # private repo without them, drop this entry or build it with `cross`.
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            debarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # musl gives one statically linked binary that runs on any distribution,
+      # old glibc included, with nothing to install alongside it.
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Confirm the binary is genuinely static
+        run: |
+          set -euo pipefail
+          file target/${{ matrix.target }}/release/sitrep
+          if ldd target/${{ matrix.target }}/release/sitrep 2>&1 | grep -qv "not a dynamic executable"; then
+            echo "::error::binary is dynamically linked; it will not be portable"
+            exit 1
+          fi
+          ./target/${{ matrix.target }}/release/sitrep --version
+
+      # Ships as LinuxSitRep, with sitrep alongside it as a symlink that tar
+      # preserves, so either name works straight out of the archive.
+      - name: Stage the tarball
+        run: |
+          set -euo pipefail
+          stage=LinuxSitRep-${{ matrix.arch }}
+          mkdir -p "$stage"
+          cp target/${{ matrix.target }}/release/sitrep "$stage/LinuxSitRep"
+          ln -s LinuxSitRep "$stage/sitrep"
+          cp README.md LICENSE "$stage/"
+          tar --format=gnu -czf "$stage.tar.gz" "$stage"
+          sha256sum "$stage.tar.gz" > "$stage.tar.gz.sha256"
+
+      - name: Build .deb
+        run: |
+          set -euo pipefail
+          cargo install cargo-deb --locked
+          cargo deb --no-build --target ${{ matrix.target }} --output .
+          ls -la ./*.deb
+
+      - name: Verify the .deb installs and both names work
+        run: |
+          set -euo pipefail
+          sudo dpkg -i ./*.deb
+          LinuxSitRep --version | grep -q "^LinuxSitRep"
+          sitrep --version
+          sudo dpkg -r sitrep
+          test ! -e /usr/bin/sitrep || { echo "prerm left the symlink behind"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            LinuxSitRep-${{ matrix.arch }}.tar.gz
+            LinuxSitRep-${{ matrix.arch }}.tar.gz.sha256
+            *.deb
+
+  macos:
+    name: macos universal
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      # One binary for Apple silicon and Intel, so there is a single download.
+      - name: Fuse into a universal binary
+        run: |
+          set -euo pipefail
+          lipo -create -output MacSitrep \
+            target/aarch64-apple-darwin/release/sitrep \
+            target/x86_64-apple-darwin/release/sitrep
+          lipo -info MacSitrep
+          ./MacSitrep --version | grep -q "^MacSitrep"
+
+      - name: Stage the tarball
+        run: |
+          set -euo pipefail
+          stage=MacSitrep-universal
+          mkdir -p "$stage"
+          cp MacSitrep "$stage/MacSitrep"
+          ln -s MacSitrep "$stage/sitrep"
+          cp README.md LICENSE "$stage/"
+          tar --format=gnu -czf "$stage.tar.gz" "$stage"
+          shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: |
+            MacSitrep-universal.tar.gz
+            MacSitrep-universal.tar.gz.sha256
+
+  publish:
+    name: publish release
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - run: ls -la dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            Reads your system logs and tells you what's wrong, in English.
+            Runs entirely offline — no network, no account, no telemetry.
+
+            | Platform | Download | Command |
+            |---|---|---|
+            | macOS (Intel + Apple silicon) | `MacSitrep-universal.tar.gz` | `MacSitrep` |
+            | Linux x86_64 | `LinuxSitRep-x86_64.tar.gz` or the `.deb` | `LinuxSitRep` |
+            | Linux arm64 | `LinuxSitRep-aarch64.tar.gz` or the `.deb` | `LinuxSitRep` |
+
+            Linux binaries are statically linked against musl and need nothing
+            installed alongside them. Each archive also contains a `sitrep`
+            symlink, so either name works.
+
+            Verify a download with the matching `.sha256` file.

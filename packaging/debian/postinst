@@ -1,0 +1,7 @@
+#!/bin/sh
+# The package installs the command as LinuxSitRep; `sitrep` is provided as a
+# convenience symlink so the documented examples work verbatim.
+set -e
+if [ "$1" = "configure" ]; then
+    ln -sf LinuxSitRep /usr/bin/sitrep
+fi

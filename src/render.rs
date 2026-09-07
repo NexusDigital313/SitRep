@@ -7,7 +7,7 @@
 
 use crate::event::Severity;
 use crate::report::{Report, Verdict};
-use owo_colors::{OwoColorize, Style, Stream};
+use owo_colors::{OwoColorize, Stream, Style};
 
 /// Terminal width, clamped: prose past ~100 columns is hard to read, and a
 /// terminal narrower than 60 gets a fixed floor rather than broken layout.
@@ -140,10 +140,7 @@ fn verdict_banner(out: &mut String, r: &Report, w: usize) {
         facts.push(format!("up {up}"));
     }
     let line = truncate(&facts.join("  ·  "), w.saturating_sub(4));
-    out.push_str(&format!(
-        "  {}\n",
-        line.if_supports_color(Stream::Stdout, |t| t.dimmed())
-    ));
+    out.push_str(&format!("  {}\n", line.if_supports_color(Stream::Stdout, |t| t.dimmed())));
 }
 
 fn section(out: &mut String, title: &str, w: usize) {
@@ -210,8 +207,9 @@ fn findings(out: &mut String, r: &Report, w: usize) {
         let label = f.severity.label();
         let budget = inner.saturating_sub(label.chars().count() + count.chars().count() + 4);
         let title = truncate(&f.title, budget);
-        let gap = inner
-            .saturating_sub(label.chars().count() + 2 + title.chars().count() + count.chars().count());
+        let gap = inner.saturating_sub(
+            label.chars().count() + 2 + title.chars().count() + count.chars().count(),
+        );
 
         push(&format!(
             "{}  {}{}{}",
@@ -230,7 +228,8 @@ fn findings(out: &mut String, r: &Report, w: usize) {
             push("");
             push(&format!(
                 "{}",
-                "LIKELY CAUSE".if_supports_color(Stream::Stdout, |t| t.style(Style::new().bold().dimmed()))
+                "LIKELY CAUSE"
+                    .if_supports_color(Stream::Stdout, |t| t.style(Style::new().bold().dimmed()))
             ));
             for c in &f.cause {
                 for (n, line) in wrap(c, inner.saturating_sub(4)).into_iter().enumerate() {
@@ -243,7 +242,8 @@ fn findings(out: &mut String, r: &Report, w: usize) {
             push("");
             push(&format!(
                 "{}",
-                "WHAT TO DO".if_supports_color(Stream::Stdout, |t| t.style(Style::new().bold().dimmed()))
+                "WHAT TO DO"
+                    .if_supports_color(Stream::Stdout, |t| t.style(Style::new().bold().dimmed()))
             ));
             for (n, step) in f.fix.iter().enumerate() {
                 for (l, line) in wrap(step, inner.saturating_sub(5)).into_iter().enumerate() {
@@ -375,8 +375,6 @@ pub fn badge(severity: Severity) -> String {
 pub fn set_color_override(on: bool) {
     owo_colors::set_override(on);
 }
-
-
 
 #[cfg(test)]
 mod tests {

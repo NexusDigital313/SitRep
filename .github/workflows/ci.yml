@@ -1,0 +1,150 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets
+
+  # The unit and fixture tests cover the Linux parsing logic, but until this job
+  # runs there is nothing exercising the actual journalctl / systemctl / dmesg
+  # invocations against a live systemd machine. That is exactly the gap this
+  # closes: it does not assert the machine is healthy, only that collecting from
+  # real tools works and produces well-formed output.
+  smoke-linux:
+    name: smoke test against live journald
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release
+
+      - name: Confirm the runner actually has systemd to read
+        run: |
+          systemctl --version | head -1
+          journalctl --version | head -1
+          echo "journal entries visible: $(journalctl --no-pager -n 5 2>/dev/null | wc -l)"
+
+      - name: Collect from the live system
+        run: |
+          set -euo pipefail
+          ./target/release/sitrep --since 1h | tee /tmp/report.txt
+          grep -q "SITREP" /tmp/report.txt
+
+      - name: Live collection must produce valid JSON
+        run: |
+          set -euo pipefail
+          ./target/release/sitrep --since 1h --json > /tmp/report.json
+          jq -e '.verdict and (.scanned | type == "number") and (.findings | type == "array")' \
+            /tmp/report.json > /dev/null
+          echo "verdict: $(jq -r .verdict /tmp/report.json), scanned: $(jq -r .scanned /tmp/report.json)"
+
+      - name: Real journalctl JSON must round-trip through the pipe reader
+        run: |
+          set -euo pipefail
+          journalctl -b -o json --no-pager -n 500 > /tmp/live.json || true
+          if [ -s /tmp/live.json ]; then
+            ./target/release/sitrep -f /tmp/live.json --json | jq -e '.scanned >= 0' > /dev/null
+            echo "piped $(wc -l < /tmp/live.json) real journald records"
+          else
+            echo "::warning::journal not readable by this user; skipped the pipe check"
+          fi
+
+      - name: Subcommands must run against a live system
+        run: |
+          set -euo pipefail
+          ./target/release/sitrep rules | tail -2
+          ./target/release/sitrep learn | head -20
+          ./target/release/sitrep explain "Out of memory: Killed process 1 (x)" | grep -q CRITICAL
+
+      - name: Alias name must be reflected in usage
+        run: |
+          set -euo pipefail
+          ln -sf "$PWD/target/release/sitrep" /tmp/LinuxSitRep
+          /tmp/LinuxSitRep --version | grep -q "^LinuxSitRep"
+
+      - name: --exit-code contract
+        run: |
+          ./target/release/sitrep -f fixtures/linux/journal-bad-day.json --exit-code; code=$?
+          test "$code" -eq 2 || { echo "expected exit 2, got $code"; exit 1; }
+
+  offline:
+    name: verify no network dependency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Running offline is a feature, so it gets enforced like one. These two
+      # checks are deterministic: they hold regardless of linker, libc or
+      # target, unlike inspecting the built binary's symbols.
+      - name: No networking crate may enter the dependency tree
+        run: |
+          set -euo pipefail
+          if cargo tree --edges normal \
+             | grep -iE '\b(reqwest|hyper|tokio|rustls|openssl|native-tls|ureq|curl|isahc|surf|h2|quinn)\b'; then
+            echo "::error::a networking crate entered the dependency tree"
+            exit 1
+          fi
+          echo "clean: no networking crate linked"
+
+      - name: Source must not reach for a socket
+        run: |
+          set -euo pipefail
+          if grep -rnE '\b(std::net|TcpStream|TcpListener|UdpSocket|to_socket_addrs)\b' src/; then
+            echo "::error::source opened a network API"
+            exit 1
+          fi
+          echo "clean: no network API used in src/"
+
+      - name: No optional feature may reintroduce one
+        run: |
+          set -euo pipefail
+          feats=$(cargo metadata --no-deps --format-version 1 \
+                  | jq -r '.packages[0].features | keys[]' | grep -v '^default$' || true)
+          if [ -n "$feats" ]; then
+            echo "::error::unexpected optional features present: $feats"
+            exit 1
+          fi
+          echo "clean: no optional features"
+
+      # Informational only. A statically linked musl build has no dynamic
+      # symbol table at all, so this cannot be a gate — but it is worth seeing.
+      - name: Report any networking symbols in the built binary
+        continue-on-error: true
+        run: |
+          cargo build --release
+          echo "dynamic symbols matching network APIs:"
+          nm -D target/release/sitrep 2>/dev/null \
+            | grep -E '\b(connect|socket|getaddrinfo)\b' || echo "  none"
