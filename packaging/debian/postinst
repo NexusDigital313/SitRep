@@ -1,7 +1,6 @@
 #!/bin/sh
-# The package installs the command as LinuxSitRep; `sitrep` is provided as a
-# convenience symlink so the documented examples work verbatim.
+# The package installs /usr/bin/SitRep; LinuxSitRep is the platform-named alias.
 set -e
 if [ "$1" = "configure" ]; then
-    ln -sf LinuxSitRep /usr/bin/sitrep
+    ln -sf SitRep /usr/bin/LinuxSitRep
 fi

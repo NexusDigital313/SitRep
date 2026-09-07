@@ -1,9 +1,9 @@
-# sitrep
+# SitRep
 
 Reads the logs your machine already keeps and tells you what's wrong, in English.
 
 Every operating system logs constantly, and almost none of it is written for a
-human. `sitrep` reads it for you — `journalctl`, `systemctl` and `dmesg` on
+human. `SitRep` reads it for you — `journalctl`, `systemctl` and `dmesg` on
 Linux; the unified log, `launchd` and crash reports on macOS — matches it
 against a library of known failure patterns, and prints a ranked report that
 says what happened, why it matters, and what to type next.
@@ -44,7 +44,7 @@ says what happened, why it matters, and what to type next.
 
 ## It runs offline
 
-`sitrep` makes no network connections. There is no API, no account, no
+`SitRep` makes no network connections. There is no API, no account, no
 telemetry, and no HTTP or TLS library linked into the binary at all — you can
 check with `cargo tree`. It reads local logs, matches local rules, and prints.
 That is the whole program. It works on an airgapped box, and nothing about your
@@ -52,33 +52,39 @@ logs leaves the machine.
 
 ## Install
 
-The command is named for its platform. One source tree, one binary per OS:
+`SitRep` is the command everywhere, with a platform-named alias alongside it.
+One source tree, one binary per OS:
 
-| Platform | Command | Get it |
+| Platform | Commands | Get it |
 |---|---|---|
-| macOS (Intel + Apple silicon) | **`MacSitrep`** | `MacSitrep-universal.tar.gz` from Releases |
-| Linux x86_64 / arm64 | **`LinuxSitRep`** | `LinuxSitRep-*.tar.gz` or the `.deb` from Releases |
+| macOS (Intel + Apple silicon) | **`SitRep`**, `MacSitRep` | `MacSitRep-universal.tar.gz` from Releases |
+| Linux x86_64 / arm64 | **`SitRep`**, `LinuxSitRep` | `SitRep-linux-*.tar.gz` or the `.deb` from Releases |
 
 ```sh
-# From a clone — builds and installs both `sitrep` and the platform alias
+# From a clone — installs SitRep plus the platform alias
 make install                       # -> ~/.cargo/bin, no sudo
 sudo make install PREFIX=/usr/local
 
-# Debian / Ubuntu
-sudo dpkg -i sitrep_0.1.0_amd64.deb    # installs LinuxSitRep
+# Debian / Ubuntu — installs SitRep and LinuxSitRep
+sudo dpkg -i sitrep_0.1.0_amd64.deb
 
-# Plain cargo — gives you `sitrep` only, no alias
+# Plain cargo — gives you `SitRep` only, no alias
 cargo install --path .
 ```
 
 Linux release binaries are statically linked against musl: one file, no
 dependencies, runs on any distribution including ancient glibc. macOS ships a
-universal binary. Every archive also contains a `sitrep` symlink, so either
+universal binary. Every archive also contains a `SitRep` symlink, so either
 name works.
 
-`sitrep` is the canonical name and `MacSitrep` / `LinuxSitRep` are symlinks to
-it — but the program reads `argv[0]`, so `--help`, `--version` and every error
-message name whichever alias you actually typed.
+`SitRep` is the real binary; `MacSitRep` and `LinuxSitRep` are symlinks to it.
+The program reads `argv[0]`, so `--help`, `--version` and every error message
+name whichever alias you actually typed:
+
+```
+$ MacSitRep --version
+MacSitRep 0.1.0
+```
 
 If `~/.cargo/bin` is not on your `PATH`:
 
@@ -88,23 +94,23 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
 
 ## Use
 
-Examples below say `sitrep`; substitute `MacSitrep` or `LinuxSitRep` freely.
+Examples below say `SitRep`; `MacSitRep` and `LinuxSitRep` work identically.
 
 ```sh
-sitrep                        # what is wrong with this machine
-sitrep --since 2h             # narrow the window
-sitrep explain "<log line>"   # translate one line you pasted
-sitrep watch                  # follow the log live, translating as it goes
-sitrep rules --tag disk       # what it knows how to recognise
-sitrep learn                  # draft rules for what it could not explain
+SitRep                        # what is wrong with this machine
+SitRep --since 2h             # narrow the window
+SitRep explain "<log line>"   # translate one line you pasted
+SitRep watch                  # follow the log live, translating as it goes
+SitRep rules --tag disk       # what it knows how to recognise
+SitRep learn                  # draft rules for what it could not explain
 ```
 
 It reads piped input too, which is how you check a Linux server from a Mac:
 
 ```sh
-ssh web01 journalctl -b -o json | sitrep
-ssh web01 'journalctl -b -o json' | sitrep --json | jq '.findings[0]'
-cat /var/log/syslog | sitrep
+ssh web01 journalctl -b -o json | SitRep
+ssh web01 'journalctl -b -o json' | SitRep --json | jq '.findings[0]'
+cat /var/log/syslog | SitRep
 ```
 
 journald JSON, macOS `ndjson`, and plain syslog text are detected automatically.
@@ -129,12 +135,12 @@ SSH brute force, full disks, thermal throttling, SELinux and sandbox denials,
 kernel panics.
 
 Anything it does not recognise is grouped by shape and counted, so a thousand
-near-identical lines occupy one row. `sitrep learn` turns those groups into
+near-identical lines occupy one row. `SitRep learn` turns those groups into
 draft rules with the regex already written for you:
 
 ```sh
-sitrep learn                  # print stubs for review
-sitrep learn --write          # install them to ~/.config/sitrep/rules/
+SitRep learn                  # print stubs for review
+SitRep learn --write          # install them to ~/.config/sitrep/rules/
 ```
 
 Fill in the prose once, and every future run explains that line. Rules are plain
@@ -168,7 +174,7 @@ built-ins. A rule with a bad regex is reported and skipped, never fatal.
 | Fallback | `/var/log/syslog`, `/var/log/messages` | — |
 
 Nothing needs root. Without it some kernel messages may be unavailable, and
-`sitrep` says so in a "scan was incomplete" section rather than quietly
+`SitRep` says so in a "scan was incomplete" section rather than quietly
 reporting a clean bill of health.
 
 ## Development
@@ -206,8 +212,10 @@ SHA-256. It verifies the Linux binaries are genuinely static and installs the
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The arm64 Linux job uses GitHub's ARM runners, which are free on public repos.
-On a private repo, drop that matrix entry or build it with `cross`.
+The arm64 Linux binary is cross-compiled with `cross` in Docker, since
+GitHub's free ARM runners are public-repo only. If this repo ever goes public,
+switching that matrix entry to a `ubuntu-24.04-arm` runner with `cross: false`
+is faster.
 
 ## License
 

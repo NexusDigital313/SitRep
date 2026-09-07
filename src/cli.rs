@@ -16,11 +16,11 @@ pub const DEFAULT_SINCE: &str = "boot";
     // matches the alias the command was invoked under.
     version,
     about = "Reads your system logs and tells you what's wrong, in English.",
-    long_about = "sitrep reads the logs your operating system already keeps — journalctl, \
+    long_about = "SitRep reads the logs your operating system already keeps — journalctl, \
 systemctl and dmesg on Linux; the unified log, launchd and crash reports on macOS — \
 and turns them into a ranked report of what is actually wrong, written for a human.\n\n\
 With no arguments it reports on the machine it is running on. Piped input is detected \
-automatically, so this works too:\n\n  ssh web01 journalctl -b -o json | sitrep"
+automatically, so this works too:\n\n  ssh web01 journalctl -b -o json | SitRep"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -64,7 +64,7 @@ pub enum Command {
     },
     /// Follow the log live, translating lines as they arrive
     Watch,
-    /// Draft rule stubs for whatever this machine logs that sitrep cannot explain
+    /// Draft rule stubs for whatever this machine logs that SitRep cannot explain
     Learn {
         /// Append the stubs to ~/.config/sitrep/rules/learned.toml instead of printing
         #[arg(long)]

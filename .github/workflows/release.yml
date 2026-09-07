@@ -20,21 +20,20 @@ env:
 jobs:
   linux:
     name: linux ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
-            runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            debarch: amd64
-          # GitHub's arm64 Linux runners are free for public repositories. On a
-          # private repo without them, drop this entry or build it with `cross`.
+            cross: false
+          # GitHub's free arm64 Linux runners are public-repo only, so arm64 is
+          # cross-compiled in Docker instead. Swap this to a `ubuntu-24.04-arm`
+          # runner with cross:false if the repo ever goes public — it is faster.
           - arch: aarch64
-            runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            debarch: arm64
+            cross: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,30 +44,42 @@ jobs:
       # musl gives one statically linked binary that runs on any distribution,
       # old glibc included, with nothing to install alongside it.
       - name: Install musl toolchain
+        if: '!matrix.cross'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
 
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
+
+      # `file` works on a foreign architecture; `ldd` does not, so the static
+      # check has to read the ELF header rather than try to load the binary.
       - name: Confirm the binary is genuinely static
         run: |
           set -euo pipefail
-          file target/${{ matrix.target }}/release/sitrep
-          if ldd target/${{ matrix.target }}/release/sitrep 2>&1 | grep -qv "not a dynamic executable"; then
-            echo "::error::binary is dynamically linked; it will not be portable"
+          bin=target/${{ matrix.target }}/release/SitRep
+          file "$bin"
+          file "$bin" | grep -q "statically linked" || {
+            echo "::error::binary is not statically linked; it will not be portable"
             exit 1
-          fi
-          ./target/${{ matrix.target }}/release/sitrep --version
+          }
 
       # Ships as LinuxSitRep, with sitrep alongside it as a symlink that tar
       # preserves, so either name works straight out of the archive.
       - name: Stage the tarball
         run: |
           set -euo pipefail
-          stage=LinuxSitRep-${{ matrix.arch }}
+          stage=SitRep-linux-${{ matrix.arch }}
           mkdir -p "$stage"
-          cp target/${{ matrix.target }}/release/sitrep "$stage/LinuxSitRep"
-          ln -s LinuxSitRep "$stage/sitrep"
+          cp target/${{ matrix.target }}/release/SitRep "$stage/SitRep"
+          ln -s SitRep "$stage/LinuxSitRep"
           cp README.md LICENSE "$stage/"
           tar --format=gnu -czf "$stage.tar.gz" "$stage"
           sha256sum "$stage.tar.gz" > "$stage.tar.gz.sha256"
@@ -80,21 +91,31 @@ jobs:
           cargo deb --no-build --target ${{ matrix.target }} --output .
           ls -la ./*.deb
 
+      # Only meaningful natively — an aarch64 binary will not execute here.
       - name: Verify the .deb installs and both names work
+        if: '!matrix.cross'
         run: |
           set -euo pipefail
           sudo dpkg -i ./*.deb
+          SitRep --version | grep -q "^SitRep"
           LinuxSitRep --version | grep -q "^LinuxSitRep"
-          sitrep --version
           sudo dpkg -r sitrep
-          test ! -e /usr/bin/sitrep || { echo "prerm left the symlink behind"; exit 1; }
+          test ! -e /usr/bin/LinuxSitRep || { echo "prerm left the alias behind"; exit 1; }
+
+      - name: Verify the cross-built .deb unpacks correctly
+        if: matrix.cross
+        run: |
+          set -euo pipefail
+          dpkg-deb -c ./*.deb | tee /tmp/contents
+          grep -q "usr/bin/SitRep" /tmp/contents
+          dpkg-deb -I ./*.deb | grep -i "^ Architecture"
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
           path: |
-            LinuxSitRep-${{ matrix.arch }}.tar.gz
-            LinuxSitRep-${{ matrix.arch }}.tar.gz.sha256
+            SitRep-linux-${{ matrix.arch }}.tar.gz
+            SitRep-linux-${{ matrix.arch }}.tar.gz.sha256
             *.deb
 
   macos:
@@ -116,19 +137,19 @@ jobs:
       - name: Fuse into a universal binary
         run: |
           set -euo pipefail
-          lipo -create -output MacSitrep \
-            target/aarch64-apple-darwin/release/sitrep \
-            target/x86_64-apple-darwin/release/sitrep
-          lipo -info MacSitrep
-          ./MacSitrep --version | grep -q "^MacSitrep"
+          lipo -create -output SitRep \
+            target/aarch64-apple-darwin/release/SitRep \
+            target/x86_64-apple-darwin/release/SitRep
+          lipo -info SitRep
+          ./SitRep --version | grep -q "^SitRep"
 
       - name: Stage the tarball
         run: |
           set -euo pipefail
-          stage=MacSitrep-universal
+          stage=MacSitRep-universal
           mkdir -p "$stage"
-          cp MacSitrep "$stage/MacSitrep"
-          ln -s MacSitrep "$stage/sitrep"
+          cp SitRep "$stage/SitRep"
+          ln -s SitRep "$stage/MacSitRep"
           cp README.md LICENSE "$stage/"
           tar --format=gnu -czf "$stage.tar.gz" "$stage"
           shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256"
@@ -137,8 +158,8 @@ jobs:
         with:
           name: macos-universal
           path: |
-            MacSitrep-universal.tar.gz
-            MacSitrep-universal.tar.gz.sha256
+            MacSitRep-universal.tar.gz
+            MacSitRep-universal.tar.gz.sha256
 
   publish:
     name: publish release
@@ -161,14 +182,14 @@ jobs:
             Reads your system logs and tells you what's wrong, in English.
             Runs entirely offline — no network, no account, no telemetry.
 
-            | Platform | Download | Command |
+            | Platform | Download | Commands |
             |---|---|---|
-            | macOS (Intel + Apple silicon) | `MacSitrep-universal.tar.gz` | `MacSitrep` |
-            | Linux x86_64 | `LinuxSitRep-x86_64.tar.gz` or the `.deb` | `LinuxSitRep` |
-            | Linux arm64 | `LinuxSitRep-aarch64.tar.gz` or the `.deb` | `LinuxSitRep` |
+            | macOS (Intel + Apple silicon) | `MacSitRep-universal.tar.gz` | `SitRep`, `MacSitRep` |
+            | Linux x86_64 | `SitRep-linux-x86_64.tar.gz` or the `.deb` | `SitRep`, `LinuxSitRep` |
+            | Linux arm64 | `SitRep-linux-aarch64.tar.gz` or the `.deb` | `SitRep`, `LinuxSitRep` |
 
             Linux binaries are statically linked against musl and need nothing
-            installed alongside them. Each archive also contains a `sitrep`
-            symlink, so either name works.
+            installed alongside them. Each archive carries the platform-named
+            alias as a symlink, so either command works.
 
             Verify a download with the matching `.sha256` file.

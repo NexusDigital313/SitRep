@@ -15,10 +15,10 @@ use rules::RuleSet;
 use std::io::IsTerminal;
 
 /// The command is installed under a platform-specific name (`MacSitrep`,
-/// `LinuxSitRep`) symlinked to the canonical `sitrep` binary. Parsing through
+/// `LinuxSitRep`) symlinked to the canonical `SitRep` binary. Parsing through
 /// argv[0] rather than `Cli::parse()` means `--help` and every usage and error
 /// message names whichever alias the user actually typed, instead of always
-/// saying "sitrep".
+/// saying "SitRep".
 fn invoked_as() -> &'static str {
     std::env::args_os()
         .next()
@@ -30,7 +30,7 @@ fn invoked_as() -> &'static str {
         // clap wants a 'static name. Leaking one short string that lives as
         // long as the process is the honest way to say "this never frees".
         .map(|n| &*n.leak())
-        .unwrap_or("sitrep")
+        .unwrap_or("SitRep")
 }
 
 fn main() {
@@ -51,7 +51,7 @@ fn main() {
     match run(&args) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            eprintln!("sitrep: {e:#}");
+            eprintln!("{}: {e:#}", invoked_as());
             std::process::exit(3);
         }
     }
@@ -67,7 +67,7 @@ fn run(args: &Cli) -> Result<i32> {
         problems.extend(ruleset.load_dir(&dir)?);
     }
     for p in &problems {
-        eprintln!("sitrep: {p}");
+        eprintln!("{}: {p}", invoked_as());
     }
 
     match &args.command {
@@ -98,7 +98,7 @@ fn scan(ruleset: &RuleSet, args: &Cli) -> Result<i32> {
     let opts = opts_from(args);
 
     // Piped input wins over the live system, and is detected rather than
-    // declared — `... | sitrep` should simply work.
+    // declared — `... | SitRep` should simply work.
     let collection = match &args.file {
         Some(path) => collect::piped::collect(Some(path), &opts)?,
         None => match collect::piped::try_stdin(&opts)? {
@@ -137,7 +137,7 @@ fn explain(ruleset: &RuleSet, text: &[String], args: &Cli) -> Result<i32> {
     };
 
     if line.is_empty() {
-        eprintln!("sitrep: nothing to explain — pass a log line, or pipe one in");
+        eprintln!("{}: nothing to explain — pass a log line, or pipe one in", invoked_as());
         return Ok(3);
     }
 
@@ -165,7 +165,7 @@ fn explain(ruleset: &RuleSet, text: &[String], args: &Cli) -> Result<i32> {
     if report.findings.is_empty() {
         println!("\n  {}\n", render::yellow("No rule recognises that line."));
         println!("  {}", render::dim("It may still be benign. To write your own explanation,"));
-        println!("  {}\n", render::dim("run `sitrep learn` — it drafts the rule for you."));
+        println!("  {}\n", render::dim("run `SitRep learn` — it drafts the rule for you."));
         return Ok(1);
     }
 
@@ -250,9 +250,9 @@ fn learn(ruleset: &RuleSet, args: &Cli, write: bool) -> Result<i32> {
     }
 
     let mut toml = String::new();
-    toml.push_str("# Drafted by `sitrep learn` from this machine's own logs.\n");
+    toml.push_str("# Drafted by `SitRep learn` from this machine's own logs.\n");
     toml.push_str("# Each stub matched real lines; fill in the prose and it works forever.\n");
-    toml.push_str("# Widen the pattern if it looks too specific, then re-run: sitrep rules\n");
+    toml.push_str("# Widen the pattern if it looks too specific, then re-run: SitRep rules\n");
 
     for u in &report.unexplained {
         let seen_on = u.unit.as_deref().map(|x| format!(", from {x}")).unwrap_or_default();

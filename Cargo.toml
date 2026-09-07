@@ -9,6 +9,12 @@ readme = "README.md"
 keywords = ["logs", "journalctl", "dmesg", "systemd", "diagnostics"]
 categories = ["command-line-utilities"]
 
+# The package name stays lowercase — Debian requires it and crates.io prefers
+# it — while the command users actually type is capitalised.
+[[bin]]
+name = "SitRep"
+path = "src/main.rs"
+
 
 [dependencies]
 anyhow = "1.0.104"
@@ -38,7 +44,7 @@ priority = "optional"
 # Statically linked against musl, so it needs nothing at runtime.
 depends = ""
 assets = [
-    ["target/release/sitrep", "usr/bin/LinuxSitRep", "755"],
+    ["target/release/SitRep", "usr/bin/SitRep", "755"],
     ["README.md", "usr/share/doc/sitrep/README.md", "644"],
 ]
 maintainer-scripts = "packaging/debian"

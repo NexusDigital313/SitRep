@@ -58,13 +58,13 @@ jobs:
       - name: Collect from the live system
         run: |
           set -euo pipefail
-          ./target/release/sitrep --since 1h | tee /tmp/report.txt
+          ./target/release/SitRep --since 1h | tee /tmp/report.txt
           grep -q "SITREP" /tmp/report.txt
 
       - name: Live collection must produce valid JSON
         run: |
           set -euo pipefail
-          ./target/release/sitrep --since 1h --json > /tmp/report.json
+          ./target/release/SitRep --since 1h --json > /tmp/report.json
           jq -e '.verdict and (.scanned | type == "number") and (.findings | type == "array")' \
             /tmp/report.json > /dev/null
           echo "verdict: $(jq -r .verdict /tmp/report.json), scanned: $(jq -r .scanned /tmp/report.json)"
@@ -74,7 +74,7 @@ jobs:
           set -euo pipefail
           journalctl -b -o json --no-pager -n 500 > /tmp/live.json || true
           if [ -s /tmp/live.json ]; then
-            ./target/release/sitrep -f /tmp/live.json --json | jq -e '.scanned >= 0' > /dev/null
+            ./target/release/SitRep -f /tmp/live.json --json | jq -e '.scanned >= 0' > /dev/null
             echo "piped $(wc -l < /tmp/live.json) real journald records"
           else
             echo "::warning::journal not readable by this user; skipped the pipe check"
@@ -83,19 +83,20 @@ jobs:
       - name: Subcommands must run against a live system
         run: |
           set -euo pipefail
-          ./target/release/sitrep rules | tail -2
-          ./target/release/sitrep learn | head -20
-          ./target/release/sitrep explain "Out of memory: Killed process 1 (x)" | grep -q CRITICAL
+          ./target/release/SitRep rules | tail -2
+          ./target/release/SitRep learn | head -20
+          ./target/release/SitRep explain "Out of memory: Killed process 1 (x)" | grep -q CRITICAL
 
       - name: Alias name must be reflected in usage
         run: |
           set -euo pipefail
-          ln -sf "$PWD/target/release/sitrep" /tmp/LinuxSitRep
+          ln -sf "$PWD/target/release/SitRep" /tmp/LinuxSitRep
+          ./target/release/SitRep --version | grep -q "^SitRep"
           /tmp/LinuxSitRep --version | grep -q "^LinuxSitRep"
 
       - name: --exit-code contract
         run: |
-          ./target/release/sitrep -f fixtures/linux/journal-bad-day.json --exit-code; code=$?
+          ./target/release/SitRep -f fixtures/linux/journal-bad-day.json --exit-code; code=$?
           test "$code" -eq 2 || { echo "expected exit 2, got $code"; exit 1; }
 
   offline:
@@ -146,5 +147,5 @@ jobs:
         run: |
           cargo build --release
           echo "dynamic symbols matching network APIs:"
-          nm -D target/release/sitrep 2>/dev/null \
+          nm -D target/release/SitRep 2>/dev/null \
             | grep -E '\b(connect|socket|getaddrinfo)\b' || echo "  none"

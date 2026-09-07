@@ -358,7 +358,7 @@ pub fn yellow(s: &str) -> String {
     s.if_supports_color(Stream::Stdout, |t| t.yellow()).to_string()
 }
 
-/// The inverse-video severity chip used by `sitrep watch`.
+/// The inverse-video severity chip used by `SitRep watch`.
 pub fn badge(severity: Severity) -> String {
     let (text, style) = match severity {
         Severity::Emergency | Severity::Alert | Severity::Critical => {

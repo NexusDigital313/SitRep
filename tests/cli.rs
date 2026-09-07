@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-const BIN: &str = env!("CARGO_BIN_EXE_sitrep");
+const BIN: &str = env!("CARGO_BIN_EXE_SitRep");
 
 fn run(args: &[&str]) -> (String, i32) {
     let out = Command::new(BIN).args(args).output().expect("binary should run");

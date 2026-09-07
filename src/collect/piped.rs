@@ -1,7 +1,7 @@
 //! Reads logs from a file or stdin instead of from the live system.
 //!
 //! This is what lets a Mac analyse a Linux box:
-//!   ssh web01 journalctl -b -o json | sitrep -
+//!   ssh web01 journalctl -b -o json | SitRep -
 //!
 //! Format is sniffed rather than declared, because asking the user to label
 //! their own paste is a bad trade for a few lines of detection.
