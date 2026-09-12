@@ -133,6 +133,30 @@ fix = [
 tags = ["security", "codesign"]
 
 [[rule]]
+id = "macos.notarization-daemon"
+match = 'Error checking with notarization daemon'
+severity = "warning"
+title = "Gatekeeper could not reach the notarization service"
+means = """
+syspolicyd checks new code against Apple's notarization records before allowing
+it to run. That check is failing, so it falls back on what it can verify
+locally. Code that would otherwise be allowed can be refused, and the rejection
+message blames the code rather than the failed lookup — so this usually shows up
+as unexplained "did not match any currently allowed policy" errors nearby.
+"""
+cause = [
+  "The machine is offline, or a firewall or VPN is blocking Apple's servers",
+  "A lot of unsigned or ad-hoc signed binaries are being scanned in a loop",
+  "The syspolicy databases are stale or damaged",
+]
+fix = [
+  "Check the rejections it is causing: log show --last 1h --predicate 'process == \"syspolicyd\"' | grep -i notariz",
+  "Confirm the machine can reach Apple: spctl -a -vv /Applications/Safari.app",
+  "If they always arrive together, treat this as the cause and the Gatekeeper warning as the symptom",
+]
+tags = ["security", "codesign", "network"]
+
+[[rule]]
 id = "macos.apfs-error"
 match = 'apfs.*(?:error|corrupt)|fsck_apfs.*error|disk\d+s\d+: I/O error'
 severity = "critical"

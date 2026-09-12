@@ -312,9 +312,13 @@ fn list_rules(ruleset: &RuleSet, tag: Option<&str>) {
         shown += 1;
         // Pad before styling: escape codes have width on the terminal but not
         // on screen, so {:<28} on a styled string mis-aligns the column.
+        // `{:<28}` pads but never truncates, so an id longer than the column
+        // runs straight into the title. Guarantee the gap.
+        let id = format!("{:<28}", rule.id);
+        let gap = if rule.id.len() >= 28 { " " } else { "" };
         println!(
-            "  {}{}",
-            render::bold(&format!("{:<28}", rule.id)),
+            "  {}{gap}{}",
+            render::bold(&id),
             rule.title.split(" — ").next().unwrap_or(&rule.title)
         );
         if !rule.tags.is_empty() {
@@ -322,8 +326,9 @@ fn list_rules(ruleset: &RuleSet, tag: Option<&str>) {
         }
     }
     println!();
+    let noun = if shown == 1 { "rule" } else { "rules" };
     match tag {
-        Some(t) => println!("  {}\n", render::dim(&format!("{shown} rules tagged '{t}'"))),
-        None => println!("  {}\n", render::dim(&format!("{shown} rules loaded"))),
+        Some(t) => println!("  {}\n", render::dim(&format!("{shown} {noun} tagged '{t}'"))),
+        None => println!("  {}\n", render::dim(&format!("{shown} {noun} loaded"))),
     }
 }
