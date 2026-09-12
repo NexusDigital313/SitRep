@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Syslog severity, which both journald and the macOS unified log map onto
 /// cleanly enough for our purposes. Ordered most severe first so that
 /// `#[derive(Ord)]` sorts the scary things to the top.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Emergency,
@@ -107,12 +107,36 @@ pub struct Event {
     pub message: String,
     /// The untouched line, shown as evidence under a finding.
     pub raw: String,
+    /// How many identical lines this event stands for. Collectors fold
+    /// duplicates before the event cap is applied, so one row here can
+    /// represent thousands of lines; the report multiplies by this rather
+    /// than counting events.
+    #[serde(default = "one")]
+    pub folded: u32,
+    /// Timestamp of the newest line folded into this one, so a folded event
+    /// still describes a span rather than an instant.
+    #[serde(default)]
+    pub last_timestamp: Option<String>,
+}
+
+fn one() -> u32 {
+    1
 }
 
 impl Event {
     pub fn new(source: Source, severity: Severity, raw: impl Into<String>) -> Self {
         let raw = raw.into();
-        Self { timestamp: None, unit: None, pid: None, severity, source, message: raw.clone(), raw }
+        Self {
+            timestamp: None,
+            unit: None,
+            pid: None,
+            severity,
+            source,
+            message: raw.clone(),
+            raw,
+            folded: 1,
+            last_timestamp: None,
+        }
     }
 
     pub fn with_message(mut self, message: impl Into<String>) -> Self {

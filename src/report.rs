@@ -100,7 +100,9 @@ const MAX_UNEXPLAINED: usize = 12;
 /// `include_info` keeps unrecognised lines below warning level in the report;
 /// lines a rule explains are always kept, whatever their level.
 pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Report {
-    let scanned = collection.events.len();
+    // Events may each stand for many identical lines, so the headline count
+    // is the sum of their multiplicities, not the number of rows.
+    let scanned: usize = collection.events.iter().map(|e| e.folded as usize).sum();
     let mut findings: HashMap<(String, String), Finding> = HashMap::new();
     let mut unknown: HashMap<String, Unexplained> = HashMap::new();
 
@@ -117,7 +119,7 @@ pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Rep
                 sample: event.message.clone(),
                 unit: event.unit.clone(),
             });
-            entry.count += 1;
+            entry.count += event.folded as usize;
             entry.severity = entry.severity.min(event.severity);
             continue;
         }
@@ -139,13 +141,15 @@ pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Rep
                 samples: Vec::new(),
             });
 
-            entry.count += 1;
+            entry.count += event.folded as usize;
             entry.severity = entry.severity.min(m.severity);
 
             if let Some(unit) = &event.unit {
                 entry.units.insert(unit.clone());
             }
-            if let Some(ts) = &event.timestamp {
+            for ts in
+                [event.timestamp.as_ref(), event.last_timestamp.as_ref()].into_iter().flatten()
+            {
                 match &entry.first_seen {
                     Some(f) if f.as_str() <= ts.as_str() => {}
                     _ => entry.first_seen = Some(ts.clone()),

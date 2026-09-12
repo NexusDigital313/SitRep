@@ -1,10 +1,11 @@
 //! Platform collectors. Each one shells out to the native logging tools and
 //! normalizes whatever comes back into `Event`s.
 
-use crate::event::{Event, Severity};
+use crate::event::{Event, Severity, Source};
 use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::process::Command;
 use std::sync::LazyLock;
 
@@ -99,16 +100,57 @@ pub struct Collection {
 /// Sorting before truncating matters: if the cap is hit, the lines that survive
 /// are the most severe ones, not an arbitrary prefix.
 pub fn finish(c: &mut Collection, opts: &CollectOpts) {
+    // Fold before capping, never after. A busy Mac logs a quarter of a million
+    // lines an hour, most of them the same handful of messages repeating; left
+    // unfolded the cap throws away whole *kinds* of problem, and the low-severity
+    // ones go first because of the sort below. Folding first means the cap
+    // measures distinct shapes, which is what it was always meant to measure.
+    fold_duplicates(&mut c.events);
+
     // Stable sort, so equal-severity events keep chronological order.
     c.events.sort_by_key(|e| e.severity);
     if c.events.len() > opts.max_events {
         c.notes.push(format!(
-            "more than {} notable lines — kept the {} most severe and stopped there; \
-             narrow the window with --since to see the rest",
+            "more than {} distinct kinds of line — kept the {} most severe and stopped \
+             there; narrow the window with --since to see the rest",
             opts.max_events, opts.max_events
         ));
         c.events.truncate(opts.max_events);
     }
+}
+
+/// Collapses lines that differ only in their variable parts into one event
+/// carrying a count. Severity, source and unit join the key so folding can
+/// never merge two genuinely different problems, or blur which process a
+/// message came from.
+fn fold_duplicates(events: &mut Vec<Event>) {
+    let mut seen: HashMap<(String, Severity, Source, Option<String>), usize> = HashMap::new();
+    let mut out: Vec<Event> = Vec::with_capacity(events.len());
+
+    for event in std::mem::take(events) {
+        let key = (
+            crate::rules::fingerprint(&event.message),
+            event.severity,
+            event.source,
+            event.unit.clone(),
+        );
+        match seen.get(&key) {
+            Some(&i) => {
+                let kept: &mut Event = &mut out[i];
+                kept.folded = kept.folded.saturating_add(event.folded);
+                // Keep the span: earliest stays in `timestamp`, newest here.
+                if event.timestamp.is_some() {
+                    kept.last_timestamp = event.timestamp;
+                }
+            }
+            None => {
+                seen.insert(key, out.len());
+                out.push(event);
+            }
+        }
+    }
+
+    *events = out;
 }
 
 /// Runs a command and returns stdout. Never panics; a missing binary or a
