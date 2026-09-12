@@ -271,7 +271,14 @@ pub fn fingerprint(message: &str) -> String {
     let mut chars = message.chars().peekable();
 
     while let Some(c) = chars.next() {
-        if c.is_ascii_digit() || (c.is_ascii_hexdigit() && !c.is_ascii_alphabetic()) {
+        // A leading sign belongs to the number that follows it, but only where a
+        // sign can actually appear. Without this, `(-1)` and `(0)` fingerprint
+        // differently and one recurring message splits into two groups.
+        let signed = c == '-'
+            && chars.peek().is_some_and(char::is_ascii_digit)
+            && !out.chars().next_back().is_some_and(|p| p.is_ascii_alphanumeric());
+
+        if signed || c.is_ascii_digit() || (c.is_ascii_hexdigit() && !c.is_ascii_alphabetic()) {
             // Swallow the whole numeric run, emit one placeholder.
             while chars.peek().is_some_and(|n| {
                 n.is_ascii_hexdigit() || *n == 'x' || *n == ':' || *n == '.' || *n == '-'
@@ -320,8 +327,12 @@ pub fn derive_pattern(message: &str) -> String {
 pub fn derive_id(message: &str) -> String {
     let words: Vec<String> = message
         .split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase())
-        .filter(|w| w.len() > 2 && !w.chars().all(|c| c.is_ascii_digit()))
+        // Digits are dropped, not kept: the derived pattern generalises them to
+        // `\d+`, so an id built from one run's pid would differ from the next
+        // run's for the very same rule, and `learn --write` would install a
+        // duplicate every time.
+        .map(|w| w.chars().filter(char::is_ascii_alphabetic).collect::<String>().to_lowercase())
+        .filter(|w| w.len() > 2)
         .take(4)
         .collect();
 
@@ -357,6 +368,22 @@ mod tests {
         let a = fingerprint("connection from 10.0.0.4 port 55231 closed");
         let b = fingerprint("connection from 192.168.1.9 port 4001 closed");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn fingerprints_collapse_negative_numbers_with_positive_ones() {
+        // Seen live on macOS: 1,584 identical kernel warnings split into two
+        // groups because one carried (-1) and the other (0).
+        let a = fingerprint("memorystatus_control error: CONVERT_MEMLIMIT_MB(-1) returned -1 22");
+        let b = fingerprint("memorystatus_control error: CONVERT_MEMLIMIT_MB(0) returned -1 22");
+        assert_eq!(a, b, "a sign should not split one problem into two groups");
+    }
+
+    #[test]
+    fn fingerprints_keep_hyphenated_words_intact() {
+        // The sign rule must not fire mid-word, or UTF-8 and UTF-16 collapse
+        // into unrelated text.
+        assert_ne!(fingerprint("decoded as UTF-8 stream"), fingerprint("decoded as UTF stream"));
     }
 
     #[test]
@@ -424,6 +451,14 @@ mod tests {
     fn derives_a_readable_id() {
         assert_eq!(derive_id("Failed to start nginx 12 daemon"), "failed-start-nginx-daemon");
         assert_eq!(derive_id("42 7"), "unnamed");
+    }
+
+    #[test]
+    fn derived_ids_are_stable_when_only_numbers_change() {
+        let a = derive_id("Peer connection [pid=779] lacks APSConnectionInitiateEntitlement");
+        let b = derive_id("Peer connection [pid=4210] lacks APSConnectionInitiateEntitlement");
+        assert_eq!(a, b, "the same rule must keep one id across runs");
+        assert!(!a.contains(|c: char| c.is_ascii_digit()), "id kept a volatile number: {a}");
     }
 
     #[test]

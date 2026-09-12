@@ -173,14 +173,16 @@ built-ins. A rule with a bad regex is reported and skipped, never fatal.
 | Crashes | `systemd-coredump` records | `~/Library/Logs/DiagnosticReports` |
 | Fallback | `/var/log/syslog`, `/var/log/messages` | — |
 
-Nothing needs root. Without it some kernel messages may be unavailable, and
-`SitRep` says so in a "scan was incomplete" section rather than quietly
-reporting a clean bill of health.
+Nothing needs root. Without it some kernel messages may be unavailable on
+Linux, and on macOS the unified log records sensitive values as `<private>` —
+the detail a rule would have matched on is simply not there. Either way
+`SitRep` says so in a "scan was incomplete" section, with the proportion of
+lines affected, rather than quietly reporting a clean bill of health.
 
 ## Development
 
 ```sh
-make test                     # 63 tests
+make test                     # 68 tests
 make lint                     # clippy -D warnings, plus rustfmt
 make build
 ```

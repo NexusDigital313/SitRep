@@ -143,6 +143,30 @@ jobs:
           lipo -info SitRep
           ./SitRep --version | grep -q "^SitRep"
 
+      # ci.yml can only run this informationally: a musl static has no dynamic
+      # symbol table. Mach-O does, so here it is a real gate — a dynamically
+      # linked binary must name every libSystem symbol it calls, and a socket
+      # cannot hide. Confirmed to fire: a binary calling socket()/getaddrinfo()
+      # is rejected, /usr/bin/nc names seven of these, this binary names none.
+      - name: Neither slice may import a socket API
+        run: |
+          set -euo pipefail
+          pat='^_(socket|connect|bind|listen|accept|sendto|recvfrom|getaddrinfo|gethostbyname)$'
+          for arch in arm64 x86_64; do
+            syms=$(nm -arch "$arch" -u SitRep 2>/dev/null || true)
+            # An unreadable slice must not pass for a clean one.
+            if [ -z "$syms" ]; then
+              echo "::error::read no undefined symbols for $arch"
+              exit 1
+            fi
+            if printf '%s\n' "$syms" | grep -qE "$pat"; then
+              echo "::error::$arch slice imports a socket API"
+              printf '%s\n' "$syms" | grep -E "$pat"
+              exit 1
+            fi
+          done
+          echo "clean: neither slice imports a socket API"
+
       - name: Stage the tarball
         run: |
           set -euo pipefail
@@ -151,7 +175,8 @@ jobs:
           cp SitRep "$stage/SitRep"
           ln -s SitRep "$stage/MacSitRep"
           cp README.md LICENSE "$stage/"
-          tar --format=gnu -czf "$stage.tar.gz" "$stage"
+          # ustar, not gnu: this job runs on bsdtar, which spells that format "gnutar"
+          tar --format=ustar -czf "$stage.tar.gz" "$stage"
           shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
