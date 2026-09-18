@@ -159,6 +159,7 @@ fn collect_failed_units(c: &mut Collection) {
         c.failed_units.push(FailedUnit {
             name: name.to_string(),
             detail: if detail.is_empty() { "failed".into() } else { detail },
+            running: false,
         });
     }
 }

@@ -1,6 +1,6 @@
 //! macOS collector: the unified log, launchd, and the diagnostic reports.
 
-use super::{CollectOpts, Collection, FailedUnit, hostname, run};
+use super::{CollectOpts, Collection, FailedUnit, TS_FORMAT, hostname, run};
 use crate::event::{Event, Severity, Source};
 use anyhow::Result;
 use serde::Deserialize;
@@ -32,6 +32,8 @@ pub fn collect(opts: &CollectOpts) -> Result<Collection> {
     };
     c.uptime = run("uptime", &[]).ok().and_then(|s| parse_uptime(&s));
 
+    c.boot_window = boot_window();
+
     let span = resolve_span(&opts.since);
     c.scope = format!("unified log, last {span}");
 
@@ -43,21 +45,42 @@ pub fn collect(opts: &CollectOpts) -> Result<Collection> {
     Ok(c)
 }
 
+/// Dozens of services start at once at boot and race each other for sockets,
+/// databases and hardware. They lose races they win on the retry seconds
+/// later, so anything that stopped happening inside this window is startup
+/// noise rather than a live fault.
+const BOOT_SETTLE_SECS: i64 = 120;
+
+/// kern.boottime prints: { sec = 1788722345, usec = 381803 } Sun Sep  6 ...
+fn boot_time_secs() -> Option<i64> {
+    let out = run("sysctl", &["-n", "kern.boottime"]).ok()?;
+    out.split("sec = ")
+        .nth(1)
+        .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|s| s.parse::<i64>().ok())
+}
+
+/// The settling window as (boot, boot + settle), in local
+/// `YYYY-MM-DD HH:MM:SS` — the same shape and zone `log show` prints, so the
+/// two compare as plain strings.
+fn boot_window() -> Option<(String, String)> {
+    let secs = boot_time_secs()?;
+    Some((local_stamp(secs)?, local_stamp(secs + BOOT_SETTLE_SECS)?))
+}
+
+/// Unix seconds as a local timestamp in `TS_FORMAT`.
+fn local_stamp(secs: i64) -> Option<String> {
+    jiff::Timestamp::from_second(secs)
+        .ok()
+        .map(|ts| ts.to_zoned(jiff::tz::TimeZone::system()).strftime(TS_FORMAT).to_string())
+}
+
 /// `log show` has no notion of "this boot", so translate that into a duration.
 fn resolve_span(since: &str) -> String {
     if since != "boot" {
         return since.to_string();
     }
-    // kern.boottime prints: { sec = 1788722345, usec = 381803 } Sun Sep  6 ...
-    let Ok(out) = run("sysctl", &["-n", "kern.boottime"]) else {
-        return "1h".into();
-    };
-    let Some(secs) = out
-        .split("sec = ")
-        .nth(1)
-        .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
-        .and_then(|s| s.parse::<i64>().ok())
-    else {
+    let Some(secs) = boot_time_secs() else {
         return "1h".into();
     };
 
@@ -164,8 +187,13 @@ only affects messages logged afterwards."
     ))
 }
 
-/// `launchctl list` columns are PID, last exit status, label. A status of "-"
-/// means it has not run; anything else non-zero means it ended badly.
+/// `launchctl list` columns are PID, last exit status, label.
+///
+/// The PID column is the one that says whether a job is broken *now*: a number
+/// means it is running, "-" means it is not. The status column is the exit
+/// code of its *last* run, which a perfectly healthy running job still carries
+/// after failing once and recovering. Reading status alone reports recovered
+/// jobs as currently broken.
 fn collect_launchd(c: &mut Collection) {
     let out = match run("launchctl", &["list"]) {
         Ok(o) => o,
@@ -177,8 +205,7 @@ fn collect_launchd(c: &mut Collection) {
 
     for line in out.lines().skip(1) {
         let mut cols = line.split('\t');
-        let (Some(_pid), Some(status), Some(label)) = (cols.next(), cols.next(), cols.next())
-        else {
+        let (Some(pid), Some(status), Some(label)) = (cols.next(), cols.next(), cols.next()) else {
             continue;
         };
         let status = status.trim();
@@ -189,20 +216,37 @@ fn collect_launchd(c: &mut Collection) {
             continue;
         };
 
-        let detail = if code < 0 {
+        let running = pid.trim().parse::<u32>().is_ok();
+        let label = label.trim().to_string();
+
+        let how = if code < 0 {
             format!("killed by signal {} ({})", -code, signal_name(-code))
         } else {
             format!("exited with status {code}")
         };
+        let detail = if running {
+            format!("running now; a previous run {how}")
+        } else {
+            format!("not running; last run {how}")
+        };
 
-        c.failed_units.push(FailedUnit { name: label.trim().to_string(), detail: detail.clone() });
+        c.failed_units.push(FailedUnit { name: label.clone(), detail, running });
 
         // Synthesized so the rule engine can explain it like any other line.
-        let msg = format!("{}: Service exited with abnormal code {code} — {detail}", label.trim());
+        // The wording says only what `launchctl list` actually proves — that a
+        // run ended badly. Whether launchd is *throttling* the job is a further
+        // claim that needs a throttle message to back it, so it belongs to the
+        // rule that matches one, not to every non-zero exit code.
+        let msg = if running {
+            format!("{label}: launchd job is running; a previous run {how}")
+        } else {
+            format!("{label}: launchd job is not running; last run {how}")
+        };
+        let severity = if running { Severity::Notice } else { Severity::Warning };
         c.events.push(
-            Event::new(Source::Launchd, Severity::Warning, msg.clone())
+            Event::new(Source::Launchd, severity, msg.clone())
                 .with_message(msg)
-                .with_unit(Some(label.trim().to_string())),
+                .with_unit(Some(label)),
         );
     }
 }
@@ -243,9 +287,15 @@ fn collect_crash_reports(c: &mut Collection) {
             if !matches!(ext, "ips" | "crash" | "panic" | "hang") {
                 continue;
             }
-            if entry.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < cutoff) {
+            let modified = entry.metadata().and_then(|m| m.modified()).ok();
+            if modified.is_some_and(|m| m < cutoff) {
                 continue;
             }
+            // Without a timestamp a crash report cannot be told from a current
+            // one, and a week-old crash ends up setting today's verdict.
+            let timestamp = modified
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|d| local_stamp(d.as_secs() as i64));
 
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
             let process = name.split('_').next().unwrap_or(name);
@@ -260,6 +310,7 @@ fn collect_crash_reports(c: &mut Collection) {
             c.events.push(
                 Event::new(Source::Crash, severity, msg.clone())
                     .with_message(msg)
+                    .with_timestamp(timestamp)
                     .with_unit(Some(process.to_string())),
             );
         }

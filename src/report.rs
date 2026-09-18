@@ -1,7 +1,7 @@
 //! Turns a pile of events into a ranked set of findings a person can act on.
 
-use crate::collect::{Collection, FailedUnit};
-use crate::event::Severity;
+use crate::collect::{Collection, FailedUnit, TS_PREFIX};
+use crate::event::{Severity, Source};
 use crate::rules::{RuleSet, fingerprint};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
@@ -36,6 +36,18 @@ impl Verdict {
     }
 }
 
+/// Why a finding is shown but left out of the verdict. The verdict answers
+/// "is something wrong *now*"; these are both real, and both history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stale {
+    /// Began and ended inside the post-boot settling window.
+    SettledAtBoot,
+    /// Happened before the oldest line this run read — a crash report from
+    /// yesterday surfacing in a one-hour scan, typically.
+    OutsideWindow,
+}
+
 /// One explained problem, with every occurrence folded together.
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
@@ -53,6 +65,9 @@ pub struct Finding {
     pub units: BTreeSet<String>,
     /// A few raw lines, as evidence.
     pub samples: Vec<String>,
+    /// Set when this is real but not current. Still reported; excluded from
+    /// the verdict.
+    pub stale: Option<Stale>,
 }
 
 /// Lines no rule matched, folded by shape so a thousand near-identical
@@ -87,7 +102,9 @@ fn ser_units<S: serde::Serializer>(v: &[FailedUnit], s: S) -> Result<S::Ok, S::E
     use serde::ser::SerializeSeq;
     let mut seq = s.serialize_seq(Some(v.len()))?;
     for u in v {
-        seq.serialize_element(&serde_json::json!({"name": u.name, "detail": u.detail}))?;
+        seq.serialize_element(
+            &serde_json::json!({"name": u.name, "detail": u.detail, "running": u.running}),
+        )?;
     }
     seq.end()
 }
@@ -101,8 +118,16 @@ const MAX_UNEXPLAINED: usize = 12;
 /// lines a rule explains are always kept, whatever their level.
 pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Report {
     // Events may each stand for many identical lines, so the headline count
-    // is the sum of their multiplicities, not the number of rows.
-    let scanned: usize = collection.events.iter().map(|e| e.folded as usize).sum();
+    // is the sum of their multiplicities, not the number of rows. Launchd and
+    // crash-report events are synthesized from other sources rather than read
+    // from a log, so they are not lines and are not counted — including them
+    // made the header disagree with the redaction note directly below it.
+    let scanned: usize = collection
+        .events
+        .iter()
+        .filter(|e| !matches!(e.source, Source::Launchd | Source::Crash))
+        .map(|e| e.folded as usize)
+        .sum();
     let mut findings: HashMap<(String, String), Finding> = HashMap::new();
     let mut unknown: HashMap<String, Unexplained> = HashMap::new();
 
@@ -139,6 +164,7 @@ pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Rep
                 last_seen: None,
                 units: BTreeSet::new(),
                 samples: Vec::new(),
+                stale: None,
             });
 
             entry.count += event.folded as usize;
@@ -169,10 +195,41 @@ pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Rep
     }
 
     let mut findings: Vec<Finding> = findings.into_values().collect();
+
+    // Two ways a finding can be real without being current. Dozens of daemons
+    // lose startup races they win on the retry, and a crash report is kept for
+    // a week regardless of how short a window was scanned; reporting either as
+    // a live fault is how a healthy Mac gets called DEGRADED. They stay in the
+    // report, they just do not drive the verdict.
+    for f in &mut findings {
+        let bounds =
+            |t: &Option<String>| t.as_deref().and_then(|t| t.get(..TS_PREFIX)).map(str::to_string);
+        let (Some(first), Some(last)) = (bounds(&f.first_seen), bounds(&f.last_seen)) else {
+            continue;
+        };
+
+        // Checked first: something older than everything read is outside the
+        // window whatever else is true of it, including a crash that predates
+        // this boot entirely and would otherwise look like a startup race.
+        if collection.window_start.as_ref().is_some_and(|start| last.as_str() < start.as_str()) {
+            f.stale = Some(Stale::OutsideWindow);
+        } else if collection.boot_window.as_ref().is_some_and(|(start, end)| {
+            first.as_str() >= start.as_str() && last.as_str() <= end.as_str()
+        }) {
+            f.stale = Some(Stale::SettledAtBoot);
+        }
+    }
     // Severity first, then by how often it happened, then alphabetically so
     // two runs over the same data produce byte-identical output.
+    // Severity first, then live problems ahead of ones that settled at boot,
+    // then by how often it happened, then alphabetically so two runs over the
+    // same data produce byte-identical output.
     findings.sort_by(|a, b| {
-        a.severity.cmp(&b.severity).then(b.count.cmp(&a.count)).then(a.title.cmp(&b.title))
+        a.severity
+            .cmp(&b.severity)
+            .then(a.stale.is_some().cmp(&b.stale.is_some()))
+            .then(b.count.cmp(&a.count))
+            .then(a.title.cmp(&b.title))
     });
 
     let mut unexplained: Vec<Unexplained> = unknown.into_values().collect();
@@ -197,14 +254,20 @@ pub fn build(collection: Collection, rules: &RuleSet, include_info: bool) -> Rep
     }
 }
 
+/// The verdict answers "is something wrong *now*", not "did anything ever go
+/// wrong". Findings that settled at boot, and jobs that failed once and are
+/// running again, are both excluded — they are history, not symptoms.
 fn verdict_for(findings: &[Finding], failed: &[FailedUnit]) -> Verdict {
-    let worst = findings.iter().map(|f| f.severity).min();
+    let worst = findings.iter().filter(|f| f.stale.is_none()).map(|f| f.severity).min();
+    let broken_now = failed.iter().any(|u| !u.running);
 
     match worst {
         Some(s) if s <= Severity::Critical => Verdict::Critical,
         Some(Severity::Error) => Verdict::Degraded,
-        _ if !failed.is_empty() => Verdict::Degraded,
+        _ if broken_now => Verdict::Degraded,
         Some(_) => Verdict::Noisy,
+        // Nothing current, but something was reported: grumbling, not breakage.
+        None if !findings.is_empty() || !failed.is_empty() => Verdict::Noisy,
         None => Verdict::Healthy,
     }
 }
@@ -302,6 +365,7 @@ mod tests {
             failed_units: vec![FailedUnit {
                 name: "nginx.service".into(),
                 detail: "failed".into(),
+                running: false,
             }],
             ..Default::default()
         };
@@ -317,5 +381,146 @@ mod tests {
         ]);
         let r = build(c, &rules, false);
         assert!(r.findings[0].severity < r.findings[1].severity);
+    }
+
+    /// The bug this guards: `launchctl list` prints the PID in column 1 and the
+    /// *last* exit status in column 2. A running job that failed once and
+    /// recovered carries a non-zero status forever, and was being reported as
+    /// "BROKEN RIGHT NOW".
+    #[test]
+    fn a_running_job_with_an_old_failure_is_not_broken_now() {
+        let (rules, _) = RuleSet::builtin();
+        let c = Collection {
+            failed_units: vec![FailedUnit {
+                name: "com.example.agent".into(),
+                detail: "running now; a previous run exited with status 1".into(),
+                running: true,
+            }],
+            ..Default::default()
+        };
+        assert_ne!(build(c, &rules, false).verdict, Verdict::Degraded);
+    }
+
+    #[test]
+    fn a_stopped_job_with_a_failure_is_still_degraded() {
+        let (rules, _) = RuleSet::builtin();
+        let c = Collection {
+            failed_units: vec![FailedUnit {
+                name: "com.example.agent".into(),
+                detail: "not running; last run exited with status 1".into(),
+                running: false,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(build(c, &rules, false).verdict, Verdict::Degraded);
+    }
+
+    /// Everything flagged happened within two minutes of boot and stopped.
+    /// That is services racing at startup, not a degraded machine.
+    #[test]
+    fn findings_that_settled_at_boot_do_not_degrade_the_verdict() {
+        let (rules, _) = RuleSet::builtin();
+        let event = Event::new(
+            Source::UnifiedLog,
+            Severity::Error,
+            "Sandbox: contactsd(99) deny(1) file-read-data /Library",
+        )
+        .with_timestamp(Some("2026-09-18 12:34:40".into()));
+
+        let c = Collection {
+            events: vec![event],
+            boot_window: Some(("2026-09-18 12:34:33".into(), "2026-09-18 12:36:33".into())),
+            ..Default::default()
+        };
+        let r = build(c, &rules, false);
+        assert!(
+            r.findings.iter().all(|f| f.stale == Some(Stale::SettledAtBoot)),
+            "should be marked as settled at boot"
+        );
+        assert_ne!(r.verdict, Verdict::Degraded);
+    }
+
+    #[test]
+    fn the_same_finding_after_the_boot_window_still_counts() {
+        let (rules, _) = RuleSet::builtin();
+        let event = Event::new(
+            Source::UnifiedLog,
+            Severity::Error,
+            "Sandbox: contactsd(99) deny(1) file-read-data /Library",
+        )
+        .with_timestamp(Some("2026-09-18 14:02:11".into()));
+
+        let c = Collection {
+            events: vec![event],
+            boot_window: Some(("2026-09-18 12:34:33".into(), "2026-09-18 12:36:33".into())),
+            ..Default::default()
+        };
+        let r = build(c, &rules, false);
+        assert!(r.findings.iter().all(|f| f.stale.is_none()));
+    }
+
+    /// A line from *before* this boot must not be mistaken for a startup race
+    /// just because it is older than the end of the settling window.
+    #[test]
+    fn something_from_before_this_boot_is_not_a_startup_race() {
+        let (rules, _) = RuleSet::builtin();
+        let event = Event::new(
+            Source::UnifiedLog,
+            Severity::Error,
+            "Sandbox: contactsd(99) deny(1) file-read-data /Library",
+        )
+        .with_timestamp(Some("2026-09-18 11:47:58".into()));
+
+        let c = Collection {
+            events: vec![event],
+            boot_window: Some(("2026-09-18 12:34:33".into(), "2026-09-18 12:36:33".into())),
+            ..Default::default()
+        };
+        assert!(build(c, &rules, false).findings.iter().all(|f| f.stale.is_none()));
+    }
+
+    /// The Jamf case: a crash twelve hours old kept a one-hour scan DEGRADED.
+    /// It still gets reported — it just stops setting the verdict.
+    #[test]
+    fn a_crash_older_than_the_scanned_window_does_not_degrade_the_verdict() {
+        let (rules, _) = RuleSet::builtin();
+        let crash = Event::new(
+            Source::Crash,
+            Severity::Error,
+            "Crashed Thread — crash report for someApp (someApp-2026-09-18-010735.ips)",
+        )
+        .with_timestamp(Some("2026-09-18 01:07:35".into()));
+        let recent = Event::new(Source::UnifiedLog, Severity::Notice, "nothing much happened")
+            .with_timestamp(Some("2026-09-18 12:40:00".into()));
+
+        let c = Collection {
+            events: vec![crash, recent],
+            window_start: Some("2026-09-18 12:03:00".into()),
+            ..Default::default()
+        };
+        let r = build(c, &rules, false);
+        let crash_finding =
+            r.findings.iter().find(|f| f.rule_id == "macos.app-crash").expect("crash still shown");
+        assert_eq!(crash_finding.stale, Some(Stale::OutsideWindow));
+        assert_ne!(r.verdict, Verdict::Degraded);
+    }
+
+    /// A non-zero exit code alone does not prove launchd is throttling
+    /// anything; the throttle finding must require a real throttle message.
+    #[test]
+    fn a_bare_exit_code_does_not_claim_throttling() {
+        let (rules, _) = RuleSet::builtin();
+        let e = Event::new(
+            Source::Launchd,
+            Severity::Warning,
+            "com.example.agent: launchd job is running; a previous run exited with status 1",
+        );
+        for m in rules.explain(&e) {
+            assert!(
+                !m.means.contains("slowing down its restart attempts"),
+                "{} claimed throttling without a throttle message",
+                m.rule.id
+            );
+        }
     }
 }

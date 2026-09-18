@@ -68,7 +68,7 @@ tags = ["crash", "process"]
 
 [[rule]]
 id = "macos.launchd-throttle"
-match = 'Service exited with abnormal code|(?:Throttling respawn|will restart in) (?P<secs>\d+) seconds|exited due to (?:signal|SIGKILL)'
+match = '(?:Throttling respawn|will restart in) (?P<secs>\d+) seconds'
 severity = "warning"
 sources = ["launchd", "unifiedlog", "piped"]
 title = "A background service keeps exiting and is being throttled"
@@ -111,7 +111,7 @@ tags = ["security", "sandbox"]
 
 [[rule]]
 id = "macos.gatekeeper"
-match = 'code signature|Gatekeeper|rejected.*unsigned|CSSMERR_TP_CERT_EXPIRED|invalid signature'
+match = 'code signature|Gatekeeper|rejected.*unsigned|CSSMERR_TP_CERT_EXPIRED|invalid signature for [^<]*\.(?:app|dylib|framework|bundle)'
 severity = "warning"
 title = "Code signing or Gatekeeper rejected something"
 means = """
@@ -131,6 +131,28 @@ fix = [
   "For software you trust: xattr -d com.apple.quarantine /path/to/App.app",
 ]
 tags = ["security", "codesign"]
+
+[[rule]]
+id = "macos.private-entitlement"
+match = 'require entitlement (?P<ent>com\.apple\.private\.[\w.]+)'
+severity = "notice"
+title = "An Apple-internal entitlement check was refused"
+means = """
+One Apple system service asked another for a private entitlement it does not
+hold, and was refused. These are internal to macOS — the entitlement is one only
+Apple's own binaries are ever granted — so this is not about an app you
+installed, and nothing you sign or re-sign will change it. Common at boot while
+services register with each other.
+"""
+cause = [
+  "A system service registering before the one it depends on is ready",
+  "An Apple component logging a refused optional capability as an error",
+]
+fix = [
+  "Nothing, if the feature it belongs to works. This is Apple-internal.",
+  "If a specific feature is broken, search the log for that subsystem instead",
+]
+tags = ["security", "apple-internal"]
 
 [[rule]]
 id = "macos.notarization-daemon"
@@ -155,6 +177,51 @@ fix = [
   "If they always arrive together, treat this as the cause and the Gatekeeper warning as the symptom",
 ]
 tags = ["security", "codesign", "network"]
+
+[[rule]]
+id = "macos.launchd-job-failed"
+match = 'launchd job is not running; last run (?P<how>.+)'
+severity = "warning"
+sources = ["launchd"]
+title = "A background job is not running, and its last run failed"
+means = """
+launchd is not running this job right now, and the last time it did run it ended
+badly. That combination usually means it fails every time it is started. This is
+what `launchctl list` records — it is not a claim that launchd is throttling the
+job, which needs a throttle message and has its own finding.
+"""
+cause = [
+  "The program the job points at has moved or been deleted",
+  "The job lacks permission to something it needs, such as Full Disk Access",
+  "A configuration error in the plist",
+]
+fix = [
+  "Inspect it: launchctl print gui/$(id -u)/<label>",
+  "Leftovers from uninstalled software can be removed from ~/Library/LaunchAgents/",
+]
+tags = ["launchd", "service"]
+
+[[rule]]
+id = "macos.launchd-job-recovered"
+match = 'launchd job is running; a previous run (?P<how>.+)'
+severity = "notice"
+sources = ["launchd"]
+title = "A background job failed earlier but is running now"
+means = """
+The job is alive. The non-zero status `launchctl list` shows belongs to an
+earlier run, not to the process running now — a job that failed once at boot and
+started cleanly on the retry looks exactly like this for the rest of the uptime.
+Worth noticing, not worth acting on unless it keeps happening.
+"""
+cause = [
+  "It lost a startup race and succeeded on a later attempt",
+  "A transient failure — a network or disk that was not ready yet",
+]
+fix = [
+  "Confirm it is genuinely up: launchctl print gui/$(id -u)/<label>",
+  "Check the run count; one that keeps climbing means it is still cycling",
+]
+tags = ["launchd", "service"]
 
 [[rule]]
 id = "macos.apfs-error"

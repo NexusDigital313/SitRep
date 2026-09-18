@@ -5,8 +5,9 @@
 //! setting NO_COLOR yields clean plain text with no escape codes and no
 //! separate code path to keep in sync.
 
+use crate::collect::FailedUnit;
 use crate::event::Severity;
-use crate::report::{Report, Verdict};
+use crate::report::{Report, Stale, Verdict};
 use owo_colors::{OwoColorize, Stream, Style};
 
 /// Terminal width, clamped: prose past ~100 columns is hard to read, and a
@@ -153,11 +154,13 @@ fn section(out: &mut String, title: &str, w: usize) {
     ));
 }
 
+/// Two separate lists, because they mean opposite things. A job with a
+/// non-zero last exit status that is *running* has already recovered; filing it
+/// under "BROKEN RIGHT NOW" turns a healed machine into an alarming report.
 fn failed_units(out: &mut String, r: &Report, w: usize) {
     if r.failed_units.is_empty() {
         return;
     }
-    section(out, "BROKEN RIGHT NOW", w);
 
     let name_col = r
         .failed_units
@@ -167,17 +170,39 @@ fn failed_units(out: &mut String, r: &Report, w: usize) {
         .unwrap_or(20)
         .min(w.saturating_sub(30));
 
-    for unit in &r.failed_units {
-        let name = truncate(&unit.name, name_col);
-        let pad = " ".repeat(name_col.saturating_sub(name.chars().count()));
-        out.push_str(&format!(
-            "  {} {}{}  {}\n",
-            "✗".if_supports_color(Stream::Stdout, |t| t.red()),
-            name.if_supports_color(Stream::Stdout, |t| t.style(Style::new().bold())),
-            pad,
-            unit.detail.if_supports_color(Stream::Stdout, |t| t.dimmed())
-        ));
+    let (broken, recovered): (Vec<&FailedUnit>, Vec<&FailedUnit>) =
+        r.failed_units.iter().partition(|u| !u.running);
+
+    if !broken.is_empty() {
+        section(out, "BROKEN RIGHT NOW", w);
+        for unit in broken {
+            unit_line(out, unit, name_col, true);
+        }
     }
+
+    if !recovered.is_empty() {
+        section(out, "FAILED EARLIER, RUNNING NOW", w);
+        for unit in recovered {
+            unit_line(out, unit, name_col, false);
+        }
+    }
+}
+
+fn unit_line(out: &mut String, unit: &FailedUnit, name_col: usize, broken: bool) {
+    let name = truncate(&unit.name, name_col);
+    let pad = " ".repeat(name_col.saturating_sub(name.chars().count()));
+    let mark = if broken {
+        "✗".if_supports_color(Stream::Stdout, |t| t.red()).to_string()
+    } else {
+        "•".if_supports_color(Stream::Stdout, |t| t.yellow()).to_string()
+    };
+    out.push_str(&format!(
+        "  {} {}{}  {}\n",
+        mark,
+        name.if_supports_color(Stream::Stdout, |t| t.style(Style::new().bold())),
+        pad,
+        unit.detail.if_supports_color(Stream::Stdout, |t| t.dimmed())
+    ));
 }
 
 fn findings(out: &mut String, r: &Report, w: usize) {
@@ -218,6 +243,18 @@ fn findings(out: &mut String, r: &Report, w: usize) {
             " ".repeat(gap),
             count.if_supports_color(Stream::Stdout, |t| t.dimmed())
         ));
+        if let Some(stale) = f.stale {
+            let text = match stale {
+                Stale::SettledAtBoot => {
+                    "settled during startup — every occurrence was within two minutes of boot"
+                }
+                Stale::OutsideWindow => {
+                    "older than this scan — it happened before the window you asked about"
+                }
+            };
+            let note = text.if_supports_color(Stream::Stdout, |t| t.dimmed()).to_string();
+            push(&note);
+        }
         push("");
 
         for line in wrap(&f.means, inner) {

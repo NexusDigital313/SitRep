@@ -127,6 +127,12 @@ fn scan(ruleset: &RuleSet, args: &Cli) -> Result<i32> {
 }
 
 /// Translate one line handed over on the command line or on stdin.
+/// Where `explain` pretends a pasted line came from: here.
+#[cfg(target_os = "macos")]
+const EXPLAIN_SOURCE: Source = Source::UnifiedLog;
+#[cfg(not(target_os = "macos"))]
+const EXPLAIN_SOURCE: Source = Source::Journal;
+
 fn explain(ruleset: &RuleSet, text: &[String], args: &Cli) -> Result<i32> {
     let line = if text.is_empty() {
         let mut buf = String::new();
@@ -142,7 +148,10 @@ fn explain(ruleset: &RuleSet, text: &[String], args: &Cli) -> Result<i32> {
     }
 
     let (message, unit, pid) = collect::strip_preamble(&line);
-    let event = Event::new(Source::Piped, collect::guess_severity(&line), &line)
+    // A line typed at `explain` is assumed to come from this machine, so
+    // platform-specific rules for the *other* OS stay out of the answer.
+    // Lines from elsewhere go through the pipe, which stays origin-agnostic.
+    let event = Event::new(EXPLAIN_SOURCE, collect::guess_severity(&line), &line)
         .with_message(message)
         .with_unit(unit)
         .with_pid(pid);

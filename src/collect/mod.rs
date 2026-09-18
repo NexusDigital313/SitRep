@@ -47,6 +47,14 @@ fn field_text(v: &Value, key: &str) -> Option<String> {
     }
 }
 
+/// The timestamp shape SitRep compares on: local `YYYY-MM-DD HH:MM:SS`. Every
+/// collector normalises to this so timestamps from different sources can be
+/// ordered against each other as plain strings.
+pub const TS_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+/// Width of `TS_FORMAT`, for comparing a full timestamp (which may carry
+/// fractional seconds and a zone offset) against one in exactly that shape.
+pub const TS_PREFIX: usize = 19;
+
 /// journald timestamps are microseconds since the epoch, as a string.
 fn format_micros(us: &str) -> Option<String> {
     let micros: i64 = us.parse().ok()?;
@@ -78,6 +86,10 @@ impl Default for CollectOpts {
 pub struct FailedUnit {
     pub name: String,
     pub detail: String,
+    /// Whether the job is running *now*. A launchd job can hold a non-zero
+    /// last exit status while alive and healthy, having failed once and
+    /// recovered; calling that "broken right now" is simply wrong.
+    pub running: bool,
 }
 
 /// Everything one run gathered.
@@ -90,6 +102,16 @@ pub struct Collection {
     pub scope: String,
     pub events: Vec<Event>,
     pub failed_units: Vec<FailedUnit>,
+    /// Local `YYYY-MM-DD HH:MM:SS` bounds of the post-boot settling window,
+    /// as (boot, boot + settle). A finding that both starts and ends inside it
+    /// is a startup race. Both bounds matter: testing only the upper one would
+    /// sweep in everything from before this boot as well. `None` where the
+    /// boot time could not be determined.
+    pub boot_window: Option<(String, String)>,
+    /// Oldest log line this run actually read, in `TS_FORMAT`. Anything older
+    /// than this — a crash report from yesterday, say — is outside the window
+    /// that was scanned, so it is history rather than a current symptom.
+    pub window_start: Option<String>,
     /// Things that went wrong while collecting — a missing command, a
     /// permission problem. Surfaced so the report never silently under-reports.
     pub notes: Vec<String>,
@@ -105,6 +127,18 @@ pub fn finish(c: &mut Collection, opts: &CollectOpts) {
     // unfolded the cap throws away whole *kinds* of problem, and the low-severity
     // ones go first because of the sort below. Folding first means the cap
     // measures distinct shapes, which is what it was always meant to measure.
+    // Before the cap, while every line read is still present: the oldest
+    // timestamp among them is the real start of the scanned window. Taken
+    // after truncation it would drift, since the cap drops lines by severity.
+    c.window_start = c
+        .events
+        .iter()
+        .filter(|e| !matches!(e.source, Source::Crash | Source::Launchd))
+        .filter_map(|e| e.timestamp.as_deref())
+        .filter_map(|t| t.get(..TS_PREFIX))
+        .min()
+        .map(str::to_string);
+
     fold_duplicates(&mut c.events);
 
     // Stable sort, so equal-severity events keep chronological order.

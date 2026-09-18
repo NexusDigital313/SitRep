@@ -36,6 +36,39 @@ pub struct Rule {
     /// "I/O error" cannot masquerade as a dying disk.
     #[serde(default)]
     pub sources: Option<Vec<Source>>,
+    /// Which OS this rule's advice is written for. Defaults to the pack the
+    /// rule was loaded from, so `linux.toml` never explains a macOS line in
+    /// terms of systemd. `None` means the advice holds anywhere.
+    #[serde(default)]
+    pub platform: Option<Platform>,
+}
+
+/// The OS a rule's prose assumes. This is deliberately not a build-time
+/// `cfg!`: SitRep reads piped logs from other machines, so a Mac must still be
+/// able to explain `journalctl` output from a Linux box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    Linux,
+    Macos,
+}
+
+impl Platform {
+    /// Whether a rule for this OS may fire on a line from `source`.
+    ///
+    /// `Piped`, `Crash` and `Kernel` are neutral and belong to both. Both
+    /// operating systems have a kernel, and when SitRep is handed plain text
+    /// rather than structured output it cannot tell whose kernel it is
+    /// reading — a macOS sandbox denial is logged by `kernel[0:...]` just as a
+    /// Linux OOM kill is. Only the sources that name one platform outright
+    /// (`Journal`, `Systemd` against `UnifiedLog`, `Launchd`) actually gate.
+    pub fn accepts(self, source: Source) -> bool {
+        match source {
+            Source::Piped | Source::Crash | Source::Kernel => true,
+            Source::Journal | Source::Systemd => self == Self::Linux,
+            Source::UnifiedLog | Source::Launchd => self == Self::Macos,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,20 +138,28 @@ impl RuleSet {
         self.rules.is_empty()
     }
 
-    /// Loads the rule packs baked into the binary for this platform.
+    /// Loads every rule pack baked into the binary. All of them load on every
+    /// platform on purpose — piped input may come from another machine — but
+    /// each pack stamps its rules with the OS its prose assumes, and
+    /// `explain` refuses to fire a rule against a line from the wrong one.
     pub fn builtin() -> (Self, Vec<String>) {
         let mut rules = Vec::new();
         let mut errors = Vec::new();
 
-        let packs: [(&str, &str); 3] = [
-            ("common", include_str!("../rules/common.toml")),
-            ("linux", include_str!("../rules/linux.toml")),
-            ("macos", include_str!("../rules/macos.toml")),
+        let packs: [(&str, &str, Option<Platform>); 3] = [
+            ("common", include_str!("../rules/common.toml"), None),
+            ("linux", include_str!("../rules/linux.toml"), Some(Platform::Linux)),
+            ("macos", include_str!("../rules/macos.toml"), Some(Platform::Macos)),
         ];
 
-        for (name, body) in packs {
+        for (name, body, platform) in packs {
             match toml::from_str::<RuleFile>(body) {
-                Ok(f) => rules.extend(f.rule),
+                Ok(f) => rules.extend(f.rule.into_iter().map(|mut r| {
+                    // An explicit `platform =` in the file wins, so a pack can
+                    // still carry a genuinely cross-platform rule.
+                    r.platform = r.platform.or(platform);
+                    r
+                })),
                 Err(e) => errors.push(format!("builtin rule pack '{name}' failed to parse: {e}")),
             }
         }
@@ -181,6 +222,15 @@ impl RuleSet {
 
             if let Some(allowed) = &rule.sources
                 && !allowed.contains(&event.source)
+            {
+                continue;
+            }
+
+            // A Linux rule must never explain a macOS line, or vice versa.
+            // This is what stops `Failed to start scan with error 105` from
+            // bluetoothd being answered with `systemctl status`.
+            if let Some(platform) = rule.platform
+                && !platform.accepts(event.source)
             {
                 continue;
             }
@@ -413,6 +463,7 @@ mod tests {
                 fix: vec![],
                 tags: vec![],
                 sources: None,
+                platform: None,
             },
             Rule {
                 id: "good".into(),
@@ -424,6 +475,7 @@ mod tests {
                 fix: vec![],
                 tags: vec![],
                 sources: None,
+                platform: None,
             },
         ];
         let (set, errors) = RuleSet::compile(rules);
@@ -473,6 +525,7 @@ mod tests {
             fix: vec![],
             tags: vec![],
             sources: Some(vec![Source::Kernel]),
+            platform: None,
         }];
         let (set, _) = RuleSet::compile(rules);
 
@@ -481,5 +534,68 @@ mod tests {
 
         assert_eq!(set.explain(&kern).len(), 1);
         assert_eq!(set.explain(&user).len(), 0);
+    }
+
+    /// The bug this guards: `linux.unit-start-failed` matched bluetoothd's
+    /// "Failed to start scan with error 105" on a Mac and answered it with
+    /// `systemctl status`, which does not exist on macOS.
+    #[test]
+    fn a_linux_rule_never_explains_a_macos_line() {
+        let (set, _) = RuleSet::builtin();
+        let mac =
+            Event::new(Source::UnifiedLog, Severity::Error, "Failed to start scan with error 105");
+        for m in set.explain(&mac) {
+            assert!(
+                !m.rule.id.starts_with("linux."),
+                "{} fired on a macOS line: {}",
+                m.rule.id,
+                m.means
+            );
+        }
+    }
+
+    #[test]
+    fn no_macos_line_is_ever_answered_with_linux_tooling() {
+        let (set, _) = RuleSet::builtin();
+        for text in [
+            "Failed to start scan with error 105",
+            "Out of memory: Killed process 100 (mysqld)",
+            "Service exited with abnormal code 1",
+        ] {
+            let e = Event::new(Source::UnifiedLog, Severity::Error, text);
+            for m in set.explain(&e) {
+                let prose = format!("{} {} {}", m.means, m.cause.join(" "), m.fix.join(" "));
+                for word in ["systemctl", "journalctl", "systemd", "SELinux", "AppArmor"] {
+                    assert!(!prose.contains(word), "{} told a Mac about {word}", m.rule.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_macos_rule_never_explains_a_linux_line() {
+        let (set, _) = RuleSet::builtin();
+        let lin = Event::new(
+            Source::Journal,
+            Severity::Error,
+            "Sandbox: foo(1) deny(1) file-read-data /x",
+        );
+        for m in set.explain(&lin) {
+            assert!(!m.rule.id.starts_with("macos."), "{} fired on a Linux line", m.rule.id);
+        }
+    }
+
+    /// `ssh web01 journalctl -b -o json | SitRep` is a documented workflow, so
+    /// piped input must keep reaching both packs — the platform gate is about
+    /// where a line came from, not what this binary was built for.
+    #[test]
+    fn piped_input_still_reaches_both_platforms() {
+        let (set, _) = RuleSet::builtin();
+        let oom =
+            Event::new(Source::Piped, Severity::Critical, "Out of memory: Killed process 1 (x)");
+        assert!(
+            set.explain(&oom).iter().any(|m| m.rule.id.starts_with("linux.")),
+            "a Linux rule must still explain a piped Linux line"
+        );
     }
 }
